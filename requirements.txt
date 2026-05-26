@@ -1,0 +1,4 @@
+faster-whisper>=1.0,<2
+numpy>=1.26,<3
+PyYAML>=6,<7
+sounddevice>=0.4,<1

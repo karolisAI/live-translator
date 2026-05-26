@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "live-translator-local"
+version = "0.1.0"
+description = "Local-first live microphone translator proof of concept"
+requires-python = ">=3.11"
+dependencies = [
+    "ctranslate2>=4,<5",
+    "faster-whisper>=1.0,<2",
+    "numpy>=1.26,<3",
+    "PyYAML>=6,<7",
+    "sentencepiece>=0.2,<1",
+    "sounddevice>=0.4,<1",
+]
+
+[project.optional-dependencies]
+translate = ["argostranslate>=1.9,<2"]
+tts = ["pyttsx3>=2.90,<3"]
+build = ["pyinstaller>=6,<7"]
+all = ["argostranslate>=1.9,<2", "pyttsx3>=2.90,<3", "pyinstaller>=6,<7"]
+
+[project.scripts]
+live-translator = "live_translator.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
