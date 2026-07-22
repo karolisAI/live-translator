@@ -1,70 +1,52 @@
-app:
-  mode: duplex
-  output_latency_ms: 80
-  log_level: info
-
 audio:
   sample_rate: 16000
-  frame_ms: 20
-  chunk_seconds: 3.0
-  input_device: "Microphone (PRO X)"
-  output_device: "CABLE-A Input (VB-Audio Virtual Cable A)"
-  peer_input_device: "CABLE-B Output (VB-Audio Virtual Cable B)"
-  peer_output_device: "Speakers (PRO X)"
+  chunk_seconds: 4.0
+  input_device: auto
+  output_device: auto
+  peer_input_device: auto
   input_gain: 1.0
-
-vad:
-  engine: silero
-  speech_threshold: 0.55
-  min_speech_ms: 120
-  silence_commit_ms: 450
-
-chunking:
-  mode: vad
-  frame_ms: 30
-  min_speech_ms: 250
-  min_segment_seconds: 1.2
-  silence_ms: 650
-  max_seconds: 6.0
-  pre_roll_ms: 180
-  rms_threshold: 0.012
-  peak_threshold: 0.035
-  min_active_ratio: 0.08
-  noise_multiplier: 3.0
+  playback_gain: 0.7
 
 asr:
   engine: faster-whisper
-  model: small
-  device: auto
-  compute_type: auto
+  model: base
+  device: cpu
+  compute_type: int8
+  cpu_threads: 8
   source_language: en
-  window_ms: 1200
-  step_ms: 350
   beam_size: 1
   condition_on_previous_text: false
-  no_speech_threshold: 0.90
-  log_prob_threshold: -1.8
+  no_speech_threshold: 0.75
+  log_prob_threshold: -1.3
   compression_ratio_threshold: 2.4
   min_segment_chars: 2
-
-segmentation:
-  live_engine: stream2sentence
-  cleanup_engine: wtpsplit
-  max_uncommitted_chars: 180
 
 translation:
   engine: argos
   source_language: en
   target_language: de
-  model_path: models/mt/en-de
 
 tts:
   engine: piper
-  voice: de_DE-thorsten-medium
   model_path: models/tts/de_DE-thorsten-medium.onnx
-  piper_exe: piper
+  piper_exe: tools/piper/piper.exe
   speaker: null
+  length_scale: 1.0
 
-packaging:
-  bundle_models: false
-  model_cache_dir: "%LOCALAPPDATA%/LiveTranslator/models"
+chunking:
+  mode: vad
+  frame_ms: 30
+  min_speech_ms: 180
+  min_segment_seconds: 0.8
+  rolling_window_seconds: 2.4
+  silence_ms: 450
+  max_seconds: 5.0
+  pre_roll_ms: 200
+  rms_threshold: 0.008
+  peak_threshold: 0.025
+  min_active_ratio: 0.06
+  noise_multiplier: 3.0
+
+realtime:
+  recognition_queue_size: 2
+  playback_queue_size: 1

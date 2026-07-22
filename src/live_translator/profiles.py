@@ -15,14 +15,12 @@ DIRECTION_SETTINGS: dict[str, dict[str, Any]] = {
         "asr_language": "en",
         "source_language": "en",
         "target_language": "de",
-        "tts_voice": "de_DE-thorsten-medium",
         "tts_model": "models/tts/de_DE-thorsten-medium.onnx",
     },
     "de-en": {
         "asr_language": "de",
         "source_language": "de",
         "target_language": "en",
-        "tts_voice": "en_US-hfc_male-medium",
         "tts_model": "models/tts/en_US-hfc_male-medium.onnx",
     },
 }
@@ -49,18 +47,19 @@ def write_meeting_profile(
             "output_device": translated_output_device,
             "peer_input_device": meeting_microphone_device,
             "input_gain": 1.0,
-            "playback_gain": 1.0,
+            "playback_gain": 0.7,
         },
         "asr": {
             "engine": "faster-whisper",
             "model": "base",
-            "device": "auto",
-            "compute_type": "auto",
+            "device": "cpu",
+            "compute_type": "int8",
+            "cpu_threads": 8,
             "source_language": settings["asr_language"],
             "beam_size": 1,
             "condition_on_previous_text": False,
-            "no_speech_threshold": 0.90,
-            "log_prob_threshold": -1.8,
+            "no_speech_threshold": 0.75,
+            "log_prob_threshold": -1.3,
             "compression_ratio_threshold": 2.4,
             "min_segment_chars": 2,
         },
@@ -71,23 +70,28 @@ def write_meeting_profile(
         },
         "tts": {
             "engine": "piper",
-            "voice": settings["tts_voice"],
             "model_path": settings["tts_model"],
             "piper_exe": "tools/piper/piper.exe",
             "speaker": None,
+            "length_scale": 1.0,
         },
         "chunking": {
             "mode": "vad",
             "frame_ms": 30,
-            "min_speech_ms": 250,
-            "min_segment_seconds": 1.2,
-            "silence_ms": 650,
-            "max_seconds": 6.0,
-            "pre_roll_ms": 180,
-            "rms_threshold": 0.012,
-            "peak_threshold": 0.035,
-            "min_active_ratio": 0.08,
+            "min_speech_ms": 180,
+            "min_segment_seconds": 0.8,
+            "rolling_window_seconds": 2.4,
+            "silence_ms": 450,
+            "max_seconds": 5.0,
+            "pre_roll_ms": 200,
+            "rms_threshold": 0.008,
+            "peak_threshold": 0.025,
+            "min_active_ratio": 0.06,
             "noise_multiplier": 3.0,
+        },
+        "realtime": {
+            "recognition_queue_size": 2,
+            "playback_queue_size": 1,
         },
     }
 
@@ -140,7 +144,10 @@ def _print_numbered_devices(devices: list[AudioDevice], kind: str) -> None:
     print(f"Available {kind} devices:")
     for device in devices:
         channels = device.max_input_channels if kind == "input" else device.max_output_channels
-        print(f"  [{device.index}] {device.name}  channels={channels} rate={device.default_sample_rate:.0f}")
+        print(
+            f"  [{device.index}] {device.name} [{device.host_api}] "
+            f"channels={channels} rate={device.default_sample_rate:.0f}"
+        )
 
 
 def _direction_settings(direction: str) -> dict[str, Any]:

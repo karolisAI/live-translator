@@ -30,7 +30,33 @@ class TranslationEngine:
 
         raise ValueError(f"Unsupported translation engine: {self._settings.engine}")
 
+    def prepare(self) -> None:
+        engine = self._settings.engine.lower()
+        if engine in {"none", "identity", "off"}:
+            return
+        if engine == "argos":
+            self._prepare_argos()
+            return
+        raise ValueError(f"Unsupported translation engine: {self._settings.engine}")
+
     def _translate_argos(self, text: str) -> str:
+        self._prepare_argos()
+        source_tokens = self._tokenizer.encode(text, out_type=str)
+        target_prefix = [[self._target_prefix]] if self._target_prefix else None
+        batches = self._translator.translate_batch(
+            [source_tokens],
+            target_prefix=target_prefix,
+            replace_unknowns=True,
+            beam_size=1,
+            num_hypotheses=1,
+        )
+        target_tokens = batches[0].hypotheses[0]
+        translated = self._tokenizer.decode_pieces(target_tokens)
+        if self._target_prefix and translated.startswith(self._target_prefix):
+            translated = translated[len(self._target_prefix) :]
+        return translated.replace("_", " ").strip()
+
+    def _prepare_argos(self) -> None:
         configure_argos_runtime()
         try:
             import ctranslate2
@@ -54,21 +80,6 @@ class TranslationEngine:
             self._tokenizer = spm.SentencePieceProcessor(model_file=str(sentencepiece_path))
             self._target_prefix = _target_prefix(package_path)
 
-        source_tokens = self._tokenizer.encode(text, out_type=str)
-        target_prefix = [[self._target_prefix]] if self._target_prefix else None
-        batches = self._translator.translate_batch(
-            [source_tokens],
-            target_prefix=target_prefix,
-            replace_unknowns=True,
-            beam_size=1,
-            num_hypotheses=1,
-        )
-        target_tokens = batches[0].hypotheses[0]
-        translated = self._tokenizer.decode_pieces(target_tokens)
-        if self._target_prefix and translated.startswith(self._target_prefix):
-            translated = translated[len(self._target_prefix) :]
-        return translated.replace("_", " ").strip()
-
 
 def _argos_package_path(source_language: str, target_language: str) -> Path:
     package_name = f"{source_language}_{target_language}"
@@ -77,11 +88,18 @@ def _argos_package_path(source_language: str, target_language: str) -> Path:
     if env_dir:
         candidates.append(Path(env_dir) / package_name)
     candidates.append(resolve_runtime_path(Path("models") / "argos" / "packages" / package_name))
+    data_root = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    candidates.append(data_root / "argos-translate" / "packages" / package_name)
 
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    raise FileNotFoundError(f"Bundled Argos package not found for {source_language} -> {target_language}.")
+    searched = ", ".join(str(candidate) for candidate in candidates)
+    raise FileNotFoundError(
+        f"Argos package not found for {source_language} -> {target_language}. "
+        f"Run 'live-translator argos-install --source-language {source_language} "
+        f"--target-language {target_language}'. Searched: {searched}"
+    )
 
 
 def _target_prefix(package_path: Path) -> str:

@@ -13,6 +13,8 @@ class RouteTestResult:
     sample_rate: int
     rms: float
     peak: float
+    tone_rms: float
+    tone_ratio: float
     passed: bool
 
 
@@ -24,10 +26,11 @@ def test_output_to_input_route(
     duration_seconds: float = 1.0,
     frequency_hz: float = 880.0,
     threshold: float = 0.01,
+    min_tone_ratio: float = 0.5,
 ) -> RouteTestResult:
     sd, np = _audio_packages()
-    output_index = resolve_device_index(output_device, "output")
-    input_index = resolve_device_index(input_device, "input")
+    output_index = resolve_device_index(output_device, "output", role="translated_output")
+    input_index = resolve_device_index(input_device, "input", role="meeting_input")
 
     for rate in _candidate_rates(sd, input_index, output_index, sample_rate):
         try:
@@ -45,11 +48,39 @@ def test_output_to_input_route(
             samples = np.asarray(recording, dtype=np.float32).reshape(-1)
             rms = float(np.sqrt(np.mean(np.square(samples)))) if len(samples) else 0.0
             peak = float(np.max(np.abs(samples))) if len(samples) else 0.0
-            return RouteTestResult(sample_rate=rate, rms=rms, peak=peak, passed=rms >= threshold)
+            tone_rms, tone_ratio = _tone_metrics(np, samples, rate, frequency_hz, rms)
+            return RouteTestResult(
+                sample_rate=rate,
+                rms=rms,
+                peak=peak,
+                tone_rms=tone_rms,
+                tone_ratio=tone_ratio,
+                passed=tone_rms >= threshold and tone_ratio >= min_tone_ratio,
+            )
         except Exception as exc:
             last_error = exc
 
     raise RuntimeError(f"Could not test output-to-input route: {type(last_error).__name__}: {last_error}")
+
+
+def _tone_metrics(
+    np: Any,
+    samples: Any,
+    sample_rate: int,
+    frequency_hz: float,
+    rms: float,
+) -> tuple[float, float]:
+    if len(samples) == 0 or rms <= 0.0:
+        return 0.0, 0.0
+
+    centered = samples - np.mean(samples)
+    time = np.arange(len(centered), dtype=np.float64) / float(sample_rate)
+    phase = 2.0 * pi * frequency_hz * time
+    sine_amplitude = 2.0 * float(np.dot(centered, np.sin(phase))) / len(centered)
+    cosine_amplitude = 2.0 * float(np.dot(centered, np.cos(phase))) / len(centered)
+    tone_rms = float(np.hypot(sine_amplitude, cosine_amplitude) / np.sqrt(2.0))
+    tone_ratio = min(1.0, tone_rms / rms)
+    return tone_rms, tone_ratio
 
 
 def _candidate_rates(sd: Any, input_index: int | None, output_index: int | None, preferred: int) -> list[int]:

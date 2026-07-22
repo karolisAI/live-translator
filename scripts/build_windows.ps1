@@ -12,7 +12,7 @@ if (-not (Test-Path $Python)) {
 }
 
 if ($InstallBuildTools) {
-    & $Python -m pip install -U pyinstaller
+    & $Python -m pip install -e ".[build]"
 }
 
 & $Python -c "import PyInstaller" 2>$null
@@ -20,8 +20,15 @@ if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller is not installed. Re-run with: .\scripts\build_windows.ps1 -InstallBuildTools"
 }
 
-if (-not (Test-Path "tools\piper\piper.exe")) {
-    throw "Missing tools\piper\piper.exe. Run the Piper setup/download step first."
+foreach ($asset in @(
+    "tools\piper\piper.exe",
+    "tools\piper\piper_phonemize.dll",
+    "tools\piper\onnxruntime.dll",
+    "tools\piper\espeak-ng-data"
+)) {
+    if (-not (Test-Path $asset)) {
+        throw "Missing Piper runtime asset: $asset"
+    }
 }
 
 foreach ($voice in @(
@@ -35,12 +42,14 @@ foreach ($voice in @(
     }
 }
 
-foreach ($package in @(
-    "models\argos\packages\en_de",
-    "models\argos\packages\de_en"
+foreach ($asset in @(
+    "models\argos\packages\en_de\model\model.bin",
+    "models\argos\packages\en_de\sentencepiece.model",
+    "models\argos\packages\de_en\model\model.bin",
+    "models\argos\packages\de_en\sentencepiece.model"
 )) {
-    if (-not (Test-Path $package)) {
-        throw "Missing bundled Argos package: $package"
+    if (-not (Test-Path $asset)) {
+        throw "Missing bundled Argos asset: $asset"
     }
 }
 

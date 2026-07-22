@@ -6,11 +6,12 @@ from time import perf_counter
 from live_translator.asr import FasterWhisperAsr
 from live_translator.asr.faster_whisper_engine import TranscriptResult
 from live_translator.audio.analysis import analyze_audio, has_enough_audio_energy
+from live_translator.audio.devices import describe_device_selection
 from live_translator.audio.io import play_mono, record_mono, write_wav
 from live_translator.audio.rolling import RollingSpeechChunker
-from live_translator.audio.vad import record_speech_segment
 from live_translator.config import AppConfig
 from live_translator.mt import TranslationEngine
+from live_translator.realtime import CapturedSegment, RealtimeMeetingWorkers
 from live_translator.tts import TtsSpeaker
 
 
@@ -20,6 +21,21 @@ class LocalTranslatorPipeline:
         self._asr: FasterWhisperAsr | None = None
         self._translator: TranslationEngine | None = None
         self._speaker: TtsSpeaker | None = None
+        self._verbose = False
+
+    def prepare(self, *, include_tts: bool = True) -> None:
+        started = perf_counter()
+        source = self._config.translation.source_language.upper()
+        target = self._config.translation.target_language.upper()
+        print("Preparing offline models...")
+        print(f"  Speech recognition: {self._config.asr.model}")
+        self._get_asr()
+        print(f"  Translation: {source} -> {target}")
+        self._get_translator().prepare()
+        if include_tts:
+            print(f"  Speech output: {self._config.tts.engine}")
+            self._get_speaker().validate()
+        print(f"Ready in {perf_counter() - started:.1f}s.")
 
     def record_test(self, output_path: str | Path, seconds: float | None = None, play: bool = False) -> None:
         audio = record_mono(self._config.audio, seconds)
@@ -29,6 +45,10 @@ class LocalTranslatorPipeline:
             play_mono(audio, self._config.audio)
 
     def transcribe_once(self, seconds: float | None = None) -> str:
+        started = perf_counter()
+        print(f"Preparing speech recognition: {self._config.asr.model}")
+        self._get_asr()
+        print(f"Ready in {perf_counter() - started:.1f}s.")
         audio = record_mono(self._config.audio, seconds)
         result = self._transcribe_audio_if_safe(audio)
         if result is None:
@@ -41,6 +61,7 @@ class LocalTranslatorPipeline:
         return result.text
 
     def translate_once(self, seconds: float | None = None, speak: bool = True) -> str:
+        self.prepare(include_tts=speak)
         translator = self._get_translator()
         speaker = self._get_speaker() if speak else None
         start = perf_counter()
@@ -82,7 +103,16 @@ class LocalTranslatorPipeline:
         )
         return translated
 
-    def loopback(self, chunker_mode: str | None = None, debug_audio_dir: str | Path | None = None) -> None:
+    def loopback(
+        self,
+        chunker_mode: str | None = None,
+        debug_audio_dir: str | Path | None = None,
+        *,
+        verbose: bool = False,
+    ) -> None:
+        self._verbose = verbose
+        self._print_audio_route()
+        self.prepare()
         translator = self._get_translator()
         speaker = self._get_speaker()
         debug_dir = Path(debug_audio_dir) if debug_audio_dir else None
@@ -95,8 +125,11 @@ class LocalTranslatorPipeline:
         if chunker not in {"fixed", "vad", "rolling"}:
             raise ValueError("Unsupported chunker mode. Use 'fixed', 'vad', or 'rolling'.")
 
-        print("Starting local loopback. Press Ctrl+C to stop.")
-        if chunker == "vad":
+        source = self._config.translation.source_language.upper()
+        target = self._config.translation.target_language.upper()
+        print(f"Direction: {source} -> {target}")
+        print("Live translation active. Listening continuously between phrases.")
+        if self._verbose and chunker == "vad":
             print(
                 f"Chunker=vad silence={self._config.chunking.silence_ms}ms "
                 f"min={self._config.chunking.min_segment_seconds:.1f}s "
@@ -104,65 +137,47 @@ class LocalTranslatorPipeline:
                 f"input={self._config.audio.input_device or 'default'} "
                 f"output={self._config.audio.output_device or 'default'}"
             )
-        elif chunker == "rolling":
+        elif self._verbose and chunker == "rolling":
             print(
-                f"Chunker=rolling emit={self._config.chunking.min_segment_seconds:.1f}s "
+                f"Chunker=rolling emit={self._config.chunking.rolling_window_seconds:.1f}s "
                 f"silence={self._config.chunking.silence_ms}ms "
                 f"max={self._config.chunking.max_seconds:.1f}s "
                 f"input={self._config.audio.input_device or 'default'} "
                 f"output={self._config.audio.output_device or 'default'}"
             )
-        else:
+        elif self._verbose:
             print(
                 f"Chunker=fixed chunk={self._config.audio.chunk_seconds:.1f}s "
                 f"input={self._config.audio.input_device or 'default'} "
                 f"output={self._config.audio.output_device or 'default'}"
             )
+        workers = self._create_realtime_workers(translator, speaker, debug_dir)
+        workers.start()
+        interrupted = False
         try:
-            segment_number = 0
-            if chunker == "rolling":
-                with RollingSpeechChunker(self._config.audio, self._config.chunking) as recorder:
-                    while True:
-                        segment_number += 1
-                        started = perf_counter()
-                        audio = recorder.next_chunk()
-                        debug_wav = self._write_debug_audio(debug_dir, segment_number, audio)
-                        transcript = self._transcribe_audio_if_safe(audio)
-                        if transcript is None:
-                            self._write_debug_note(debug_wav, "skipped", "")
-                            print(f"Segment total: {perf_counter() - started:.2f}s")
-                            continue
-                        translated = translator.translate(transcript.text)
-                        self._write_debug_note(debug_wav, transcript.text, translated)
-                        self._print_asr_rejections(transcript)
-                        if transcript.text:
-                            print(f"Source: {transcript.text}")
-                            print(f"Target: {translated}")
-                        if translated:
-                            speaker.speak(translated)
-                        print(f"Segment total: {perf_counter() - started:.2f}s")
+            if chunker in {"vad", "rolling"}:
+                with RollingSpeechChunker(
+                    self._config.audio,
+                    self._config.chunking,
+                    emit_while_speaking=chunker == "rolling",
+                    verbose=self._verbose,
+                ) as recorder:
+                    while not workers.stop_event.is_set():
+                        workers.raise_if_failed()
+                        audio = recorder.next_chunk(stop_event=workers.stop_event)
+                        if audio is not None:
+                            workers.submit(audio)
             else:
-                while True:
-                    segment_number += 1
-                    started = perf_counter()
-                    audio = self._record_loopback_segment(chunker)
-                    debug_wav = self._write_debug_audio(debug_dir, segment_number, audio)
-                    transcript = self._transcribe_audio_if_safe(audio)
-                    if transcript is None:
-                        self._write_debug_note(debug_wav, "skipped", "")
-                        print(f"Segment total: {perf_counter() - started:.2f}s")
-                        continue
-                    translated = translator.translate(transcript.text)
-                    self._write_debug_note(debug_wav, transcript.text, translated)
-                    self._print_asr_rejections(transcript)
-                    if transcript.text:
-                        print(f"Source: {transcript.text}")
-                        print(f"Target: {translated}")
-                    if translated:
-                        speaker.speak(translated)
-                    print(f"Segment total: {perf_counter() - started:.2f}s")
+                while not workers.stop_event.is_set():
+                    workers.raise_if_failed()
+                    workers.submit(record_mono(self._config.audio, announce=self._verbose))
         except KeyboardInterrupt:
-            print("Stopped.")
+            interrupted = True
+        finally:
+            workers.stop()
+        workers.raise_if_failed()
+        if interrupted:
+            print("Meeting translation ended.")
 
     def _get_asr(self) -> FasterWhisperAsr:
         if self._asr is None:
@@ -179,10 +194,45 @@ class LocalTranslatorPipeline:
             self._speaker = TtsSpeaker(self._config.tts, self._config.audio)
         return self._speaker
 
-    def _record_loopback_segment(self, chunker: str):
-        if chunker == "vad":
-            return record_speech_segment(self._config.audio, self._config.chunking)
-        return record_mono(self._config.audio)
+    def _process_live_segment(
+        self,
+        segment: CapturedSegment,
+        translator: TranslationEngine,
+        debug_dir: Path | None,
+    ) -> str | None:
+        started = perf_counter()
+        debug_wav = self._write_debug_audio(debug_dir, segment.number, segment.audio)
+        transcript = self._transcribe_audio_if_safe(segment.audio)
+        if transcript is None:
+            self._write_debug_note(debug_wav, "skipped", "")
+            if self._verbose:
+                print(f"Segment {segment.number}: skipped in {perf_counter() - started:.2f}s")
+            return None
+
+        translated = translator.translate(transcript.text)
+        self._write_debug_note(debug_wav, transcript.text, translated)
+        self._print_asr_rejections(transcript)
+        self._print_translation(transcript.text, translated)
+        if self._verbose:
+            queue_seconds = max(0.0, started - segment.captured_at)
+            print(
+                f"Segment {segment.number}: queue={queue_seconds:.2f}s "
+                f"recognition+translation={perf_counter() - started:.2f}s"
+            )
+        return translated or None
+
+    def _create_realtime_workers(
+        self,
+        translator: TranslationEngine,
+        speaker: TtsSpeaker,
+        debug_dir: Path | None,
+    ) -> RealtimeMeetingWorkers:
+        return RealtimeMeetingWorkers(
+            lambda segment: self._process_live_segment(segment, translator, debug_dir),
+            speaker.speak,
+            segment_queue_size=self._config.realtime.recognition_queue_size,
+            playback_queue_size=self._config.realtime.playback_queue_size,
+        )
 
     def _transcribe_audio_if_safe(self, audio) -> TranscriptResult | None:
         if not self._audio_passes_energy_gate(audio):
@@ -190,9 +240,10 @@ class LocalTranslatorPipeline:
 
         result = self._get_asr().transcribe(audio, self._config.audio.sample_rate)
         if not result.text:
-            if result.rejected_segments:
+            if result.rejected_segments and self._verbose:
                 self._print_asr_rejections(result)
-            print("Skipping segment: ASR produced no accepted speech.")
+            if self._verbose:
+                print("Skipping segment: ASR produced no accepted speech.")
             return None
         return result
 
@@ -202,12 +253,14 @@ class LocalTranslatorPipeline:
             self._config.audio.sample_rate,
             frame_ms=self._config.chunking.frame_ms,
             active_rms_threshold=self._config.chunking.rms_threshold,
+            active_peak_threshold=self._config.chunking.peak_threshold,
         )
-        print(
-            "Audio gate: "
-            f"rms={stats.rms:.4f} peak={stats.peak:.4f} active={stats.active_ratio:.2f} "
-            f"duration={stats.duration_seconds:.2f}s"
-        )
+        if self._verbose:
+            print(
+                "Audio gate: "
+                f"rms={stats.rms:.4f} peak={stats.peak:.4f} active={stats.active_ratio:.2f} "
+                f"duration={stats.duration_seconds:.2f}s"
+            )
         if has_enough_audio_energy(
             stats,
             rms_threshold=self._config.chunking.rms_threshold,
@@ -216,16 +269,24 @@ class LocalTranslatorPipeline:
         ):
             return True
 
-        print(
-            "Skipping segment: below speech energy gate "
-            f"(rms>={self._config.chunking.rms_threshold:.4f}, "
-            f"peak>={self._config.chunking.peak_threshold:.4f}, "
-            f"active>={self._config.chunking.min_active_ratio:.2f})."
-        )
+        if self._verbose:
+            print(
+                "Skipping segment: below speech energy gate "
+                f"(rms>={self._config.chunking.rms_threshold:.4f}, "
+                f"peak>={self._config.chunking.peak_threshold:.4f}, "
+                f"active>={self._config.chunking.min_active_ratio:.2f})."
+            )
         return False
 
+    def _print_translation(self, source_text: str, target_text: str) -> None:
+        source = self._config.translation.source_language.upper()
+        target = self._config.translation.target_language.upper()
+        print()
+        print(f"{source}: {source_text}")
+        print(f"{target}: {target_text}")
+
     def _print_asr_rejections(self, result: TranscriptResult) -> None:
-        if not result.rejected_segments:
+        if not self._verbose or not result.rejected_segments:
             return
         reasons = ", ".join(result.rejection_reasons[:3])
         if len(result.rejection_reasons) > 3:
@@ -255,3 +316,32 @@ class LocalTranslatorPipeline:
             ),
             encoding="utf-8",
         )
+
+    def _print_audio_route(self) -> None:
+        print("Audio routing:")
+        print(
+            "  Physical microphone: "
+            + describe_device_selection(
+                self._config.audio.input_device,
+                "input",
+                role="physical_input",
+            )
+        )
+        if self._config.audio.output_device:
+            print(
+                "  Translated output:  "
+                + describe_device_selection(
+                    self._config.audio.output_device,
+                    "output",
+                    role="translated_output",
+                )
+            )
+        if self._config.audio.peer_input_device:
+            print(
+                "  Meeting microphone: "
+                + describe_device_selection(
+                    self._config.audio.peer_input_device,
+                    "input",
+                    role="meeting_input",
+                )
+            )

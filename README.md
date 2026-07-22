@@ -1,273 +1,209 @@
-# Local Live Translator Solution
+# Live Translator
 
-This folder describes a concrete replacement for the current Azure-based live microphone translator.
+Live Translator is an offline, near-real-time Windows speech translator for
+English and German meetings. It uses faster-whisper for speech recognition,
+Argos CTranslate2 models for text translation, Piper for speech synthesis, and
+VB-CABLE to expose translated speech as a meeting microphone.
 
-The current C# POC proves the audio-routing shape: capture microphone or meeting audio, translate it, synthesize translated speech, and send the result into a virtual cable or headphones. The bottleneck is Azure Speech batching and network dependence, which creates roughly 3000 ms latency even on a good connection.
+No API key is required after the local models are prepared.
 
-The new solution should be local-first:
+## Runtime Behavior
 
-1. Capture audio locally from Windows devices.
-2. Run speech recognition locally with `faster-whisper`.
-3. Segment partial text with `stream2sentence`, with optional `wtpsplit` cleanup.
-4. Translate text locally with an offline MT model.
-5. Synthesize local speech with a fast TTS engine.
-6. Route translated audio to VB-CABLE for the MVP, then replace that with a signed virtual audio endpoint for enterprise.
+- English to German and German to English use separate profiles.
+- The microphone remains open while earlier phrases are recognized, translated,
+  synthesized, and played.
+- Recognition/translation and playback run on separate ordered workers.
+- Voice activity detection commits a phrase after a short pause.
+- ASR and translation models load, and Piper assets are validated, before the
+  application reports `Ready`.
+- Low-energy noise and low-confidence Whisper output are not spoken.
+- Bounded phrase queues prevent unlimited latency and report any overload.
+- Transient Windows output-start failures are retried on the verified WASAPI
+  endpoint. A phrase that still cannot play is reported without closing the
+  microphone or ending the meeting session.
 
-## Runnable POC
+This is phrase-level, one-direction translation per process. It is not
+simultaneous duplex interpretation or stabilized word-by-word captioning.
 
-This folder now contains a Python proof of concept under `src/live_translator`.
+```text
+physical microphone -> continuous VAD capture -> faster-whisper -> Argos
+                                                        |
+meeting microphone <- CABLE Output <- CABLE Input <- Piper playback worker
+```
 
-Install it in editable mode:
+Use a headset during a meeting. Speaker bleed into the physical microphone can
+cause the translator to hear its own synthesized output.
+
+## Requirements
+
+- Windows 10 or Windows 11
+- Python 3.11
+- A microphone and headset
+- [VB-CABLE](https://vb-audio.com/Cable/) or an equivalent virtual cable
+- [Piper Windows runtime](https://github.com/rhasspy/piper/releases/tag/2023.11.14-2)
+- [Piper voices](https://huggingface.co/rhasspy/piper-voices)
+- Argos `en_de` and `de_en` packages
+- Internet access for initial installation and the first Whisper model load
+
+Model binaries, voices, and Piper are intentionally excluded from Git. The
+runtime expects:
+
+```text
+models/argos/packages/en_de/model/model.bin
+models/argos/packages/en_de/sentencepiece.model
+models/argos/packages/de_en/model/model.bin
+models/argos/packages/de_en/sentencepiece.model
+models/tts/de_DE-thorsten-medium.onnx
+models/tts/de_DE-thorsten-medium.onnx.json
+models/tts/en_US-hfc_male-medium.onnx
+models/tts/en_US-hfc_male-medium.onnx.json
+tools/piper/piper.exe
+tools/piper/piper_phonemize.dll
+tools/piper/onnxruntime.dll
+tools/piper/espeak-ng-data/
+```
+
+## Source Setup
+
+A `vscode-vfs://github/...` VS Code window is a virtual repository view, not a
+runnable checkout. Open PowerShell in a local clone first:
 
 ```powershell
-cd C:\Users\karol\Desktop\live-translator-local-solution
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -U pip
+Set-Location C:\path\to\live-translator
+py -3.11 -m venv .venv
+Set-ExecutionPolicy -Scope Process Bypass
+& .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
-Optional extras:
+To download Argos models on a clean machine, install the optional package
+manager and direct it to the repository-local build assets:
 
 ```powershell
-python -m pip install -e ".[tts]"
 python -m pip install -e ".[translate]"
-python -m pip install -e ".[all]"
+New-Item -ItemType Directory -Force .\models\argos\packages | Out-Null
+$env:ARGOS_PACKAGES_DIR = (Resolve-Path .\models\argos\packages).Path
+live-translator argos-install --source-language en --target-language de
+live-translator argos-install --source-language de --target-language en
 ```
 
-Check dependencies:
+Download and extract the complete `piper_windows_amd64.zip` release into
+`tools\piper`. Download both `.onnx` voice files and their matching `.onnx.json`
+files into `models\tts`:
 
-```powershell
-live-translator doctor
-```
+- [German Thorsten medium](https://huggingface.co/rhasspy/piper-voices/tree/main/de/de_DE/thorsten/medium)
+- [English hfc_male medium](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/hfc_male/medium)
 
-Create a machine-local meeting profile:
+## Profiles
 
-```powershell
-live-translator setup --direction en-de
-live-translator route-test
-live-translator meeting
-```
-
-The setup command writes `%LOCALAPPDATA%\LiveTranslator\profiles\default.yaml`.
-It records the exact devices selected on that Windows machine, so the shipped
-POC does not depend on Senary, VB-CABLE, or any other hardcoded device names.
-
-List audio devices:
+List devices and note the Windows host API. WASAPI endpoints are recommended:
 
 ```powershell
 live-translator list-input-devices
 live-translator list-output-devices
 ```
 
-For meeting tests, the meeting app must use a virtual recording endpoint as its
-microphone. It must not use the physical microphone, otherwise the other party
-will hear the original speech and then the translation. See
-`docs/06-meeting-test.md` for the current Senary/VB-CABLE checklist.
-
-First useful test, transcription only:
+Create one profile per direction:
 
 ```powershell
-live-translator transcribe-once --config app.quickstart.yaml --seconds 4
+live-translator setup --profile en-de --direction en-de
+live-translator setup --profile de-en --direction de-en
 ```
 
-Then test the pipeline without translation or speech output:
+Generated profiles use `auto` for all three audio roles. At runtime the
+translator follows the Windows default physical microphone, prefers its WASAPI
+endpoint, and selects a complete standard CABLE-A playback/recording pair.
+Current PortAudio indices are never stored in an automatic profile.
+
+Profiles are stored under `%LOCALAPPDATA%\LiveTranslator\profiles`. Run setup
+with `--interactive-devices` or an explicit `--input-device` only when the
+Windows default microphone is not the microphone you want. Full friendly-name
+overrides remain stable when Windows reorders device indices.
+
+`app.example.yaml` documents supported settings. It is a template, not a
+machine-ready meeting profile.
+
+## Preflight
+
+Run before a demonstration or meeting:
 
 ```powershell
-live-translator translate-once --config app.quickstart.yaml --seconds 4 --translation-engine identity --tts-engine none
+$ENDE = "$env:LOCALAPPDATA\LiveTranslator\profiles\en-de.yaml"
+$DEEN = "$env:LOCALAPPDATA\LiveTranslator\profiles\de-en.yaml"
+
+live-translator doctor --config $ENDE --prepare-models
+live-translator doctor --config $DEEN --prepare-models
+live-translator route-test --profile en-de
+live-translator route-test --profile de-en
+live-translator translate-text --source-language en --target-language de --text "Good morning"
+live-translator translate-text --source-language de --target-language en --text "Guten Morgen"
+live-translator transcribe-once --config $ENDE --seconds 5
 ```
 
-To hear output through default Windows speech, use:
+`route-test` sends an 880 Hz reference tone through the virtual cable and checks
+for that specific tone on the matching recording endpoint.
+
+## Meeting Use
+
+In the meeting application select:
+
+- Microphone: the configured `CABLE Output`
+- Speaker: the real headset, never the virtual cable
+- Automatic microphone switching: off
+
+Start a direction:
 
 ```powershell
-live-translator translate-once --config app.quickstart.yaml --seconds 4 --translation-engine identity --tts-engine pyttsx3
+live-translator meeting --profile en-de
+live-translator meeting --profile de-en
 ```
 
-`pyttsx3` is useful only as a quick smoke test. It uses the Windows default
-output device, so it is easy to misroute in a meeting. Use Piper for real
-meeting tests because it produces audio that the app can play to the configured
-output device.
+In the default VAD meeting mode, capture remains active for the full session and
+no input is required between phrases. `Ctrl+C` only ends the running meeting
+process; it does not trigger translation. Fixed-window diagnostic mode reopens
+capture for each block.
 
-To test speech output without recording:
+Normal mode prints only accepted source text and its translation. Diagnostic
+mode adds audio gates, queue delay, timing, and saved input chunks:
 
 ```powershell
-live-translator say --config app.quickstart.yaml --tts-engine pyttsx3 --text "local translator test"
+live-translator meeting --profile en-de --verbose --debug-audio-dir debug-asr
 ```
 
-For real English to German offline translation, install an Argos language package, then run:
+## Windows Build
 
-```powershell
-live-translator argos-install --source-language en --target-language de
-live-translator translate-text --source-language en --target-language de --text "hello, this is a local test"
-live-translator translate-once --config app.quickstart.yaml --seconds 4 --translation-engine argos --target-language de --tts-engine none
-```
-
-On this machine, `en -> de` has already been installed. The shortest real mic test is:
-
-```powershell
-live-translator translate-once --config app.en-de.yaml
-```
-
-For the Senary headset devices currently shown on this machine:
-
-```powershell
-live-translator probe-input-devices
-live-translator probe-output-devices
-live-translator record-test --config app.working-devices.yaml --seconds 3 --out working-device-test.wav --play
-live-translator transcribe-once --config app.working-devices.yaml --seconds 5
-live-translator translate-once --config app.working-devices.yaml --seconds 5 --no-speak
-```
-
-`app.working-devices.yaml` is a local override file for this machine only. Keep it out of git and use `app.example.yaml` or `live-translator setup` when starting from a clean checkout.
-
-For continuous fixed-chunk testing:
-
-```powershell
-live-translator loopback --config app.en-de.yaml
-```
-
-For English-to-German meeting routing with Piper:
-
-```powershell
-live-translator say --config app.meeting-en-de.yaml --text "Dies ist ein Test."
-live-translator translate-once --config app.meeting-en-de.yaml --seconds 5
-live-translator loopback --config app.meeting-en-de.yaml
-```
-
-To avoid fixed-window 4-second chunks during meeting tests, use the phrase/VAD
-chunker. It commits after trailing silence, with a max-window fallback:
-
-```powershell
-live-translator meeting --profile en-de --chunker vad --silence-ms 550 --max-seconds 5
-```
-
-Current generated profiles use `chunking.mode: vad` by default. To compare
-against the old fixed-window behavior, run:
-
-```powershell
-live-translator meeting --profile en-de --chunker fixed
-```
-
-For lower-latency overlapping chunks while speech is ongoing, use the rolling
-mode:
-
-```powershell
-live-translator meeting --profile en-de --chunker rolling
-```
-
-The live path also has safety gates before speech is translated or spoken:
-
-- low-energy buffers are skipped before ASR
-- Whisper previous-text conditioning is disabled
-- Whisper no-speech, low-log-probability, and high-compression-ratio segments are rejected
-
-If silence still triggers ASR on a noisy device, make the gate stricter:
-
-```powershell
-live-translator meeting --profile en-de --peak-threshold 0.05 --min-active-ratio 0.15
-```
-
-If real speech is detected but rejected as low confidence, loosen the ASR
-confidence gate:
-
-```powershell
-live-translator meeting --profile en-de --no-speech-threshold 0.95 --log-prob-threshold -2.2
-```
-
-If normal phrases are still missed, test a stronger ASR model and a slightly
-longer minimum ASR window:
-
-```powershell
-live-translator meeting --profile en-de --model base --min-segment-seconds 1.6
-```
-
-Current generated meeting profiles use `base` by default because `tiny` misses
-too much normal headset speech. Use `--model tiny` only when speed matters more
-than recognition quality.
-
-To debug recognition quality, save the exact audio chunks sent to Whisper:
-
-```powershell
-live-translator meeting --profile en-de --debug-audio-dir debug-asr
-```
-
-Open the newest `debug-asr/segment-####.wav` files and compare what you hear
-with the neighboring `segment-####.txt` transcript. If the WAV is muffled or
-contains the wrong source, fix the input device/audio driver first. If the WAV
-is clear but transcription is poor, use a stronger model or longer chunks.
-
-This is a first latency improvement, not full simultaneous translation. The next
-step is rolling partial ASR with stable-prefix emission so translation can start
-before the speaker fully stops.
-
-For German-to-English, run setup with the reverse direction:
-
-```powershell
-live-translator setup --direction de-en
-live-translator meeting
-```
-
-## Windows EXE Build
-
-The POC can be packaged into a Windows app folder:
+The local model and Piper assets above must exist before building:
 
 ```powershell
 .\scripts\build_windows.ps1 -InstallBuildTools
-.\dist\LiveTranslator\LiveTranslator.exe setup
-.\dist\LiveTranslator\LiveTranslator.exe route-test
-.\dist\LiveTranslator\LiveTranslator.exe meeting
-```
-
-For a per-user local install:
-
-```powershell
+.\dist\LiveTranslator\LiveTranslator.exe --help
 .\scripts\install_windows_user.ps1
 ```
 
-This copies the built app folder to `%LOCALAPPDATA%\Programs\LiveTranslator`.
-The current build is unsigned and console-based. A signed Inno/NSIS/MSI wrapper
-should be the next packaging step after the routing profile proves reliable.
-An Inno Setup template is included at `packaging/windows/LiveTranslator.iss`;
-build it with `.\scripts\build_inno_installer.ps1` after installing Inno Setup.
+The installed application is written to
+`%LOCALAPPDATA%\Programs\LiveTranslator`. The faster-whisper model remains in
+the Windows user's Hugging Face cache; run `doctor --prepare-models` online once
+on each target machine before relying on offline operation.
 
-The current POC uses fixed chunks first. That is deliberate: it proves local capture, local ASR, translation, and output before adding VAD and lower-latency overlapping windows.
+## Verification
 
-Important correction: Whisper is not a general any-language-to-any-language translation engine. It can transcribe many languages, and its built-in translation path translates speech to English. For English to German, German to English, and future language pairs, the product needs three separate stages: ASR, machine translation, and TTS.
+```powershell
+python -m unittest discover -s tests -v
+python -m compileall -q src tests
+python -m pip check
+```
 
-## Recommended MVP
+The automated suite covers configuration, audio analysis, resampling,
+continuous segmentation, concurrent recognition/playback, overload behavior,
+worker failure propagation, and virtual-route tone detection. Hardware and
+model checks are performed with `doctor`, `route-test`, `say`, and the one-shot
+commands.
 
-Build the first Windows MVP as a Python package because the best local ASR ecosystem is already Python-friendly:
+Additional references:
 
-- `sounddevice` / PortAudio for capture and playback.
-- `faster-whisper` for local ASR through CTranslate2.
-- `silero-vad` or `webrtcvad` for speech gating.
-- `stream2sentence` for low-latency sentence-like boundaries.
-- `Argos Translate` or CTranslate2-converted Marian/NLLB models for offline text translation.
-- `Piper` for local TTS.
-- VB-CABLE A/B for Windows routing during testing.
-- PyInstaller or Nuitka for an installable Windows executable.
-
-After the MVP proves latency and quality, move the hot path into native code:
-
-- C or C++ audio engine using WASAPI or miniaudio.
-- CTranslate2 called directly for ASR and MT.
-- ONNX/Piper TTS runtime embedded as native process or library.
-- Java only for installer/admin UI/backend orchestration if needed, not the low-latency audio path.
-
-## Files
-
-- `docs/01-architecture.md` - concrete system architecture and latency budget.
-- `docs/02-package-layout.md` - proposed Python package, command line, and config structure.
-- `docs/03-windows-audio-routing.md` - Windows device routing plan using VB-CABLE A/B.
-- `docs/04-implementation-plan.md` - phased build plan with acceptance checks.
-- `docs/05-risks-and-decisions.md` - technical risks, decisions, and mitigations.
-- `docs/06-meeting-test.md` - concrete meeting-app routing checklist.
-- `docs/07-windows-packaging.md` - PyInstaller and local install notes.
-- `scripts/build_windows.ps1` - PyInstaller Windows app-folder build.
-- `scripts/install_windows_user.ps1` - per-user local install helper.
-- `scripts/build_inno_installer.ps1` - optional Inno Setup installer build.
-- `app.example.yaml` - initial config shape for the new package.
-- `app.quickstart.yaml` - minimal config for the first local test.
-- `app.en-de.yaml` - ready local English-to-German test config.
-- `app.meeting-en-de.yaml` - Piper-based English-to-German meeting test config.
-- `src/live_translator` - runnable Python POC.
+- `docs/01-architecture.md`: implemented concurrency and limits
+- `docs/02-stakeholder-overview.md`: high-level current-state briefing
+- `docs/03-windows-audio-routing.md`: Windows endpoint routing
+- `docs/04-meeting-test.md`: meeting validation checklist
+- `docs/05-windows-packaging.md`: executable build and installation

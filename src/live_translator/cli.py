@@ -2,21 +2,28 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import shutil
 import sys
 from pathlib import Path
+from typing import Callable
 
+from live_translator.asr import FasterWhisperAsr
 from live_translator.audio.route_test import test_output_to_input_route
-from live_translator.audio.devices import print_devices, probe_devices
+from live_translator.audio.devices import (
+    DeviceRole,
+    describe_device_selection,
+    print_devices,
+    probe_devices,
+    resolve_device_index,
+)
+from live_translator.audio.io import _audio_packages, _select_sample_rate
 from live_translator.config import apply_cli_overrides, load_config
 from live_translator.errors import MissingDependency
 from live_translator.mt import TranslationEngine
 from live_translator.mt.argos_packages import install_argos_package, print_installed_argos_packages
 from live_translator.pipeline import LocalTranslatorPipeline
 from live_translator.profiles import SUPPORTED_DIRECTIONS, prompt_for_device, write_meeting_profile
-from live_translator.runtime import default_profile_path, resolve_runtime_path
+from live_translator.runtime import default_profile_path
 from live_translator.tts import TtsSpeaker
-from live_translator.tts.speaker import piper_model_config_path, resolve_piper_exe
 
 TRANSLATION_ENGINES = ("identity", "argos")
 TTS_ENGINES = ("none", "pyttsx3", "piper")
@@ -38,26 +45,35 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="live-translator")
+    parser = argparse.ArgumentParser(
+        prog="live-translator",
+        description="Offline phrase-level speech translation for Windows meetings.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     setup = subparsers.add_parser("setup", help="create a local meeting profile")
     setup.add_argument("--profile", default="default", help="profile name under %%LOCALAPPDATA%%/LiveTranslator/profiles")
     setup.add_argument("--config-out", default=None, help="explicit output config path")
     setup.add_argument("--direction", choices=SUPPORTED_DIRECTIONS, default="en-de")
-    setup.add_argument("--input-device", default=None, help="physical microphone device name or index")
-    setup.add_argument("--translated-output-device", default=None, help="virtual playback endpoint for translated speech")
-    setup.add_argument("--meeting-microphone-device", default=None, help="virtual recording endpoint selected in the meeting app")
-    setup.add_argument("--seconds", type=float, default=4.0, help="fixed chunk size for this POC")
+    setup.add_argument("--input-device", default=None, help="physical microphone override; defaults to automatic selection")
+    setup.add_argument("--translated-output-device", default=None, help="virtual playback override; defaults to automatic selection")
+    setup.add_argument("--meeting-microphone-device", default=None, help="meeting microphone override; defaults to automatic selection")
+    setup.add_argument(
+        "--interactive-devices",
+        action="store_true",
+        help="select devices interactively instead of writing automatic selectors",
+    )
+    setup.add_argument("--seconds", type=float, default=4.0, help="fixed-mode fallback chunk duration")
     setup.set_defaults(func=cmd_setup)
 
-    meeting = subparsers.add_parser("meeting", help="run the default local meeting profile")
+    meeting = subparsers.add_parser("meeting", help="run a one-way meeting translation profile")
     meeting.add_argument("--profile", default="default", help="profile name to load")
     meeting.add_argument("--config", default=None, help="explicit profile/config path")
-    meeting.add_argument("--seconds", type=float, default=None, help="override chunk seconds")
+    meeting.add_argument("--seconds", type=float, default=None, help="override fixed-mode chunk duration")
     meeting.add_argument("--model", default=None, help="faster-whisper model name or local model path")
     meeting.add_argument("--input-gain", type=float, default=None, help="multiply microphone samples before ASR")
     meeting.add_argument("--debug-audio-dir", default=None, help="write each ASR input chunk as a WAV file")
+    meeting.add_argument("--verbose", action="store_true", help="show audio gates and per-segment timings")
     add_chunker_options(meeting)
     meeting.set_defaults(func=cmd_meeting)
 
@@ -70,6 +86,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser("doctor", help="check local dependencies")
     doctor.add_argument("--config", default=None, help="also validate config-specific settings")
+    doctor.add_argument(
+        "--prepare-models",
+        action="store_true",
+        help="load the configured ASR and translation models now",
+    )
     doctor.set_defaults(func=cmd_doctor)
 
     list_inputs = subparsers.add_parser("list-input-devices", help="list capture devices")
@@ -104,13 +125,14 @@ def build_parser() -> argparse.ArgumentParser:
     translate_text.add_argument("--translation-engine", choices=TRANSLATION_ENGINES, default="argos")
     translate_text.set_defaults(func=cmd_translate_text)
 
-    argos_list = subparsers.add_parser("argos-list", help="list installed Argos language packages")
-    argos_list.set_defaults(func=cmd_argos_list)
+    if not getattr(sys, "frozen", False):
+        argos_list = subparsers.add_parser("argos-list", help="list installed Argos language packages")
+        argos_list.set_defaults(func=cmd_argos_list)
 
-    argos_install = subparsers.add_parser("argos-install", help="download and install an Argos language package")
-    argos_install.add_argument("--source-language", required=True, help="source language code")
-    argos_install.add_argument("--target-language", required=True, help="target language code")
-    argos_install.set_defaults(func=cmd_argos_install)
+        argos_install = subparsers.add_parser("argos-install", help="download and install an Argos language package")
+        argos_install.add_argument("--source-language", required=True, help="source language code")
+        argos_install.add_argument("--target-language", required=True, help="target language code")
+        argos_install.set_defaults(func=cmd_argos_install)
 
     transcribe = subparsers.add_parser("transcribe-once", help="record once and transcribe locally")
     add_common_options(transcribe)
@@ -131,6 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_tts_options(loopback)
     add_chunker_options(loopback)
     loopback.add_argument("--debug-audio-dir", default=None, help="write each ASR input chunk as a WAV file")
+    loopback.add_argument("--verbose", action="store_true", help="show audio gates and per-segment timings")
     loopback.set_defaults(func=cmd_loopback)
 
     return parser
@@ -155,6 +178,12 @@ def add_tts_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tts-voice", default=None, help="TTS voice name or partial voice identifier")
     parser.add_argument("--tts-model", default=None, help="Piper .onnx voice model path")
     parser.add_argument("--piper-exe", default=None, help="Piper executable path or command name")
+    parser.add_argument(
+        "--tts-length-scale",
+        type=float,
+        default=None,
+        help="Piper duration scale; 1.0 uses a natural voice pace",
+    )
 
 
 def add_chunker_options(parser: argparse.ArgumentParser) -> None:
@@ -165,6 +194,12 @@ def add_chunker_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--peak-threshold", type=float, default=None, help="minimum audio peak before ASR runs")
     parser.add_argument("--min-active-ratio", type=float, default=None, help="minimum ratio of active frames before ASR runs")
     parser.add_argument("--min-segment-seconds", type=float, default=None, help="minimum audio duration sent to ASR")
+    parser.add_argument(
+        "--rolling-window-seconds",
+        type=float,
+        default=None,
+        help="window duration for experimental rolling mode",
+    )
     parser.add_argument("--silence-ms", type=int, default=None, help="trailing silence before a VAD segment commits")
     parser.add_argument("--max-seconds", type=float, default=None, help="maximum VAD segment length")
 
@@ -176,9 +211,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         ("faster_whisper", "local ASR", True),
         ("ctranslate2", "bundled Argos model inference", True),
         ("sentencepiece", "bundled Argos tokenization", True),
-        ("yaml", "YAML config", False),
-        ("argostranslate", "package download/install commands", False),
-        ("pyttsx3", "quick Windows TTS with --tts-engine pyttsx3", False),
+        ("yaml", "YAML config", True),
     ]
 
     missing_required = False
@@ -190,11 +223,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         if required and not found:
             missing_required = True
 
-    piper_found = shutil.which("piper") is not None
-    print(f"{'OK' if piper_found else 'MISSING':7} {'piper':16} optional  Piper CLI TTS with --tts-engine piper")
     config_ok = True
     if args.config:
-        config_ok = _print_config_checks(load_config(Path(args.config)))
+        config_ok = _print_config_checks(
+            load_config(Path(args.config)),
+            prepare_models=args.prepare_models,
+        )
     if missing_required:
         print("Install required packages with: python -m pip install -e .")
     if missing_required or not config_ok:
@@ -202,36 +236,119 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_config_checks(config) -> bool:
-    if config.tts.engine.lower() not in {"piper", "piper-cli"}:
-        return True
+def _print_config_checks(config, *, prepare_models: bool) -> bool:
+    checks: list[tuple[str, Callable[[], str]]] = [
+        (
+            "audio.input",
+            lambda: _audio_device_detail(
+                config.audio.input_device,
+                "input",
+                config.audio.sample_rate,
+                "physical_input",
+            ),
+        ),
+    ]
+    if config.tts.engine.lower() not in {"none", "off"} or config.audio.output_device:
+        checks.append(
+            (
+                "audio.output",
+                lambda: _audio_device_detail(
+                    config.audio.output_device,
+                    "output",
+                    config.audio.sample_rate,
+                    "translated_output",
+                ),
+            )
+        )
+    if config.audio.peer_input_device:
+        checks.append(
+            (
+                "meeting.input",
+                lambda: _audio_device_detail(
+                    config.audio.peer_input_device,
+                    "input",
+                    config.audio.sample_rate,
+                    "meeting_input",
+                ),
+            )
+        )
 
-    piper_exe = resolve_piper_exe(config.tts.piper_exe)
+    def prepare_translation() -> str:
+        TranslationEngine(config.translation).prepare()
+        return (
+            f"{config.translation.engine} "
+            f"{config.translation.source_language}->{config.translation.target_language}"
+        )
+
+    def validate_tts() -> str:
+        TtsSpeaker(config.tts, config.audio).validate()
+        return config.tts.engine
+
+    checks.append(("translation", prepare_translation))
+    checks.append(("speech.output", validate_tts))
+    if prepare_models:
+        checks.append(("speech.model", lambda: _prepare_asr_model(config)))
+
     print()
     print("Config checks:")
-    print(f"{'OK' if piper_exe else 'MISSING':7} {'tts.piper_exe':16} {config.tts.piper_exe}")
+    passed = True
+    for label, check in checks:
+        try:
+            detail = check()
+            print(f"{'OK':7} {label:16} {detail}")
+        except (MissingDependency, FileNotFoundError, ValueError, RuntimeError) as exc:
+            passed = False
+            print(f"{'FAIL':7} {label:16} {exc}")
+    if not prepare_models:
+        print(f"{'INFO':7} {'speech.model':16} run doctor with --prepare-models before a demo")
+    return passed
 
-    model_path = resolve_runtime_path(config.tts.model_path) if config.tts.model_path else None
-    model_exists = bool(model_path and model_path.exists())
-    print(f"{'OK' if model_exists else 'MISSING':7} {'tts.model_path':16} {model_path or '(not set)'}")
 
-    config_path = piper_model_config_path(model_path) if model_path else None
-    config_exists = bool(config_path and config_path.exists())
-    print(f"{'OK' if config_exists else 'MISSING':7} {'piper voice json':16} {config_path or '(not set)'}")
-    return bool(piper_exe and model_exists and config_exists)
+def _audio_device_detail(
+    device: str | None,
+    kind: str,
+    target_rate: int,
+    role: DeviceRole,
+) -> str:
+    sd, _ = _audio_packages()
+    index = resolve_device_index(device, kind, role=role)  # type: ignore[arg-type]
+    channels = 2 if role == "translated_output" else 1
+    rate = _select_sample_rate(
+        sd,
+        index,
+        kind,
+        target_rate,
+        channels=channels,
+        announce=False,
+    )
+    if index is None:
+        return f"Windows default (index=default, {rate} Hz)"
+    raw = sd.query_devices(index)
+    host_api = sd.query_hostapis(int(raw["hostapi"]))["name"]
+    return f"{raw['name']} [{host_api}] (index={index}, {rate} Hz)"
+
+
+def _prepare_asr_model(config) -> str:
+    FasterWhisperAsr(config.asr)
+    return f"{config.asr.model} loaded"
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
     profile_path = Path(args.config_out) if args.config_out else default_profile_path(args.profile)
-    microphone = args.input_device or prompt_for_device("input", "Select your physical microphone")
-    output = args.translated_output_device or prompt_for_device(
-        "output",
-        "Select the virtual playback endpoint that receives translated speech",
-    )
-    meeting_microphone = args.meeting_microphone_device or prompt_for_device(
-        "input",
-        "Select the matching virtual recording endpoint for the meeting app microphone",
-    )
+    if args.interactive_devices:
+        microphone = args.input_device or prompt_for_device("input", "Select your physical microphone")
+        output = args.translated_output_device or prompt_for_device(
+            "output",
+            "Select the virtual playback endpoint that receives translated speech",
+        )
+        meeting_microphone = args.meeting_microphone_device or prompt_for_device(
+            "input",
+            "Select the matching virtual recording endpoint for the meeting app microphone",
+        )
+    else:
+        microphone = args.input_device or "auto"
+        output = args.translated_output_device or "auto"
+        meeting_microphone = args.meeting_microphone_device or "auto"
     written = write_meeting_profile(
         path=profile_path,
         direction=args.direction,
@@ -243,11 +360,11 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print(f"Wrote profile: {written}")
     print()
     print("Meeting app setup:")
-    print(f"  Microphone: {meeting_microphone}")
+    print("  Microphone: the automatically selected matching CABLE Output")
     print("  Speaker: your real headphones, not the translated output endpoint")
     print()
     print(f"Run a route check with: live-translator route-test --config \"{written}\"")
-    print(f"Start the POC with:     live-translator meeting --config \"{written}\"")
+    print(f"Start translation with: live-translator meeting --config \"{written}\"")
     return 0
 
 
@@ -255,7 +372,10 @@ def cmd_meeting(args: argparse.Namespace) -> int:
     if args.config is None:
         args.config = str(default_profile_path(args.profile))
     config = build_config(args)
-    LocalTranslatorPipeline(config).loopback(debug_audio_dir=args.debug_audio_dir)
+    LocalTranslatorPipeline(config).loopback(
+        debug_audio_dir=args.debug_audio_dir,
+        verbose=args.verbose,
+    )
     return 0
 
 
@@ -276,9 +396,20 @@ def cmd_route_test(args: argparse.Namespace) -> int:
         duration_seconds=args.seconds,
     )
     status = "PASS" if result.passed else "FAIL"
+    output_detail = describe_device_selection(
+        config.audio.output_device,
+        "output",
+        role="translated_output",
+    )
+    input_detail = describe_device_selection(
+        meeting_input,
+        "input",
+        role="meeting_input",
+    )
     print(
-        f"{status}: output '{config.audio.output_device}' -> input '{meeting_input}' "
-        f"rms={result.rms:.4f} peak={result.peak:.4f} sample_rate={result.sample_rate}"
+        f"{status}: {output_detail} -> {input_detail} "
+        f"tone_rms={result.tone_rms:.4f} tone_ratio={result.tone_ratio:.2f} "
+        f"sample_rate={result.sample_rate}"
     )
     if not result.passed:
         print("The meeting app probably will not hear translated audio on that microphone endpoint.")
@@ -331,7 +462,10 @@ def cmd_translate_once(args: argparse.Namespace) -> int:
 
 def cmd_loopback(args: argparse.Namespace) -> int:
     config = build_config(args)
-    LocalTranslatorPipeline(config).loopback(debug_audio_dir=args.debug_audio_dir)
+    LocalTranslatorPipeline(config).loopback(
+        debug_audio_dir=args.debug_audio_dir,
+        verbose=args.verbose,
+    )
     return 0
 
 
@@ -354,6 +488,7 @@ def build_config(args: argparse.Namespace):
         tts_voice=getattr(args, "tts_voice", None),
         tts_model_path=getattr(args, "tts_model", None),
         piper_exe=getattr(args, "piper_exe", None),
+        tts_length_scale=getattr(args, "tts_length_scale", None),
         no_speech_threshold=getattr(args, "no_speech_threshold", None),
         log_prob_threshold=getattr(args, "log_prob_threshold", None),
         chunker_mode=getattr(args, "chunker", None),
@@ -363,4 +498,5 @@ def build_config(args: argparse.Namespace):
         min_segment_seconds=getattr(args, "min_segment_seconds", None),
         silence_ms=getattr(args, "silence_ms", None),
         max_seconds=getattr(args, "max_seconds", None),
+        rolling_window_seconds=getattr(args, "rolling_window_seconds", None),
     )

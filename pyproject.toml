@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "live-translator-local"
-version = "0.1.0"
-description = "Local-first live microphone translator proof of concept"
+version = "0.2.0"
+description = "Offline phrase-level speech translation for Windows meetings"
 requires-python = ">=3.11"
 dependencies = [
+    "av>=11,<19",
     "ctranslate2>=4,<5",
     "faster-whisper>=1.0,<2",
     "numpy>=1.26,<3",

@@ -1,4 +1,7 @@
+av>=11,<19
+ctranslate2>=4,<5
 faster-whisper>=1.0,<2
 numpy>=1.26,<3
 PyYAML>=6,<7
+sentencepiece>=0.2,<1
 sounddevice>=0.4,<1

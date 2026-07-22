@@ -7,6 +7,65 @@ from live_translator.profiles import write_meeting_profile
 
 
 class ConfigTests(unittest.TestCase):
+    def test_checked_in_configs_are_valid(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        for filename in ("app.example.yaml",):
+            with self.subTest(filename=filename):
+                load_config(root / filename)
+
+    def test_rejects_unknown_config_settings(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "app.yaml"
+            config_path.write_text(
+                "asr:\n  model: base\n  window_ms: 1200\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "asr.window_ms"):
+                load_config(config_path)
+
+    def test_rejects_non_16khz_pipeline_rate(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "app.yaml"
+            config_path.write_text(
+                "audio:\n  sample_rate: 48000\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "must be 16000"):
+                load_config(config_path)
+
+    def test_rejects_argos_auto_source_language(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires a fixed source language"):
+            apply_cli_overrides(
+                AppConfig(),
+                source_language="auto",
+                target_language="de",
+                translation_engine="argos",
+            )
+
+    def test_rejects_blank_engine_instead_of_silently_disabling_it(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "app.yaml"
+            config_path.write_text("translation:\n  engine:\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "engine must not be blank"):
+                load_config(config_path)
+
+    def test_rejects_nonpositive_cli_timings_and_thresholds(self) -> None:
+        overrides = (
+            {"seconds": -1.0},
+            {"vad_threshold": -1.0},
+            {"peak_threshold": -1.0},
+            {"min_segment_seconds": -1.0},
+            {"silence_ms": -1},
+            {"max_seconds": -1.0},
+            {"tts_length_scale": -1.0},
+        )
+        for override in overrides:
+            with self.subTest(override=override), self.assertRaisesRegex(ValueError, "positive"):
+                apply_cli_overrides(AppConfig(), **override)
+
     def test_cli_overrides_chunk_and_languages(self) -> None:
         config = apply_cli_overrides(
             AppConfig(),
@@ -33,12 +92,14 @@ class ConfigTests(unittest.TestCase):
             tts_voice="de_DE-thorsten-medium",
             tts_model_path="models/tts/de_DE-thorsten-medium.onnx",
             piper_exe="tools/piper/piper.exe",
+            tts_length_scale=1.0,
         )
 
         self.assertEqual(config.tts.engine, "piper")
         self.assertEqual(config.tts.voice, "de_DE-thorsten-medium")
         self.assertEqual(config.tts.model_path, "models/tts/de_DE-thorsten-medium.onnx")
         self.assertEqual(config.tts.piper_exe, "tools/piper/piper.exe")
+        self.assertEqual(config.tts.length_scale, 1.0)
 
     def test_loads_tts_speaker_field(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -51,6 +112,7 @@ class ConfigTests(unittest.TestCase):
                         "  model_path: models/tts/de_DE-thorsten-medium.onnx",
                         "  piper_exe: tools/piper/piper.exe",
                         "  speaker: '0'",
+                        "  length_scale: 1.0",
                     ]
                 ),
                 encoding="utf-8",
@@ -60,6 +122,7 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(config.tts.engine, "piper")
         self.assertEqual(config.tts.speaker, "0")
+        self.assertEqual(config.tts.length_scale, 1.0)
 
     def test_loads_chunking_settings(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -125,6 +188,7 @@ class ConfigTests(unittest.TestCase):
             peak_threshold=0.04,
             min_active_ratio=0.12,
             min_segment_seconds=1.4,
+            rolling_window_seconds=2.6,
             silence_ms=450,
             max_seconds=5.0,
         )
@@ -136,6 +200,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.chunking.peak_threshold, 0.04)
         self.assertEqual(config.chunking.min_active_ratio, 0.12)
         self.assertEqual(config.chunking.min_segment_seconds, 1.4)
+        self.assertEqual(config.chunking.rolling_window_seconds, 2.6)
         self.assertEqual(config.chunking.silence_ms, 450)
         self.assertEqual(config.chunking.max_seconds, 5.0)
 
@@ -158,13 +223,34 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.audio.output_device, "CABLE Input")
         self.assertEqual(config.audio.peer_input_device, "CABLE Output")
         self.assertEqual(config.audio.input_gain, 1.0)
+        self.assertEqual(config.audio.playback_gain, 0.7)
         self.assertEqual(config.asr.model, "base")
         self.assertEqual(config.tts.model_path, "models/tts/en_US-hfc_male-medium.onnx")
         self.assertEqual(config.chunking.mode, "vad")
-        self.assertEqual(config.chunking.min_segment_seconds, 1.2)
+        self.assertEqual(config.chunking.min_segment_seconds, 0.8)
+        self.assertEqual(config.chunking.rolling_window_seconds, 2.4)
+        self.assertEqual(config.chunking.silence_ms, 450)
+        self.assertEqual(config.asr.device, "cpu")
+        self.assertEqual(config.asr.compute_type, "int8")
+        self.assertEqual(config.asr.cpu_threads, 8)
+        self.assertEqual(config.realtime.recognition_queue_size, 2)
+        self.assertEqual(config.realtime.playback_queue_size, 1)
         self.assertFalse(config.asr.condition_on_previous_text)
-        self.assertEqual(config.asr.no_speech_threshold, 0.90)
-        self.assertEqual(config.asr.log_prob_threshold, -1.8)
+        self.assertEqual(config.asr.no_speech_threshold, 0.75)
+        self.assertEqual(config.asr.log_prob_threshold, -1.3)
+
+    def test_loads_realtime_queue_sizes(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "app.yaml"
+            config_path.write_text(
+                "realtime:\n  recognition_queue_size: 3\n  playback_queue_size: 5\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+        self.assertEqual(config.realtime.recognition_queue_size, 3)
+        self.assertEqual(config.realtime.playback_queue_size, 5)
 
 
 if __name__ == "__main__":

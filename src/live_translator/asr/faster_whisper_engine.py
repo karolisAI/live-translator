@@ -31,14 +31,11 @@ class FasterWhisperAsr:
             ) from exc
 
         self._settings = settings
-        print(
-            "Loading faster-whisper model "
-            f"'{settings.model}' on device={settings.device} compute_type={settings.compute_type}..."
-        )
         self._model = WhisperModel(
             settings.model,
             device=settings.device,
             compute_type=settings.compute_type,
+            cpu_threads=settings.cpu_threads,
         )
 
     def transcribe(self, audio: Any, sample_rate: int) -> TranscriptResult:
@@ -48,6 +45,7 @@ class FasterWhisperAsr:
             audio,
             language=language,
             beam_size=self._settings.beam_size,
+            without_timestamps=True,
             vad_filter=False,
             condition_on_previous_text=self._settings.condition_on_previous_text,
             no_speech_threshold=self._settings.no_speech_threshold,

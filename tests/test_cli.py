@@ -6,7 +6,7 @@ from live_translator.cli import build_parser
 class CliTests(unittest.TestCase):
     def test_say_config_does_not_force_tts_engine(self) -> None:
         args = build_parser().parse_args(
-            ["say", "--config", "app.meeting-en-de.yaml", "--text", "test"]
+            ["say", "--config", "app.example.yaml", "--text", "test"]
         )
 
         self.assertIsNone(args.tts_engine)
@@ -52,6 +52,8 @@ class CliTests(unittest.TestCase):
                 "0.12",
                 "--min-segment-seconds",
                 "1.4",
+                "--rolling-window-seconds",
+                "2.4",
             ]
         )
 
@@ -64,6 +66,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.peak_threshold, 0.04)
         self.assertEqual(args.min_active_ratio, 0.12)
         self.assertEqual(args.min_segment_seconds, 1.4)
+        self.assertEqual(args.rolling_window_seconds, 2.4)
 
     def test_meeting_accepts_rolling_chunker(self) -> None:
         args = build_parser().parse_args(

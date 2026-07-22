@@ -32,6 +32,26 @@ class TtsSpeaker:
 
         raise ValueError(f"Unsupported TTS engine: {self._tts_settings.engine}")
 
+    def validate(self) -> None:
+        engine = self._tts_settings.engine.lower()
+        if engine in {"none", "off"}:
+            return
+        if engine in {"pyttsx3", "sapi"}:
+            if self._audio_settings.output_device:
+                raise ValueError(
+                    "pyttsx3 cannot target audio.output_device. Use Piper for virtual-cable meeting routing."
+                )
+            try:
+                import pyttsx3  # noqa: F401
+            except ImportError as exc:
+                raise MissingDependency(
+                    "Missing dependency 'pyttsx3'. Install it with: python -m pip install -e \".[tts]\""
+                ) from exc
+            return
+        if engine not in {"piper", "piper-cli"}:
+            raise ValueError(f"Unsupported TTS engine: {self._tts_settings.engine}")
+        self._resolve_piper_assets()
+
     def _speak_pyttsx3(self, text: str) -> None:
         try:
             import pyttsx3
@@ -41,7 +61,9 @@ class TtsSpeaker:
             ) from exc
 
         if self._audio_settings.output_device:
-            print("Warning: pyttsx3 uses the Windows default output device; configured output_device is ignored.")
+            raise ValueError(
+                "pyttsx3 cannot target audio.output_device. Use Piper for virtual-cable meeting routing."
+            )
 
         engine = pyttsx3.init()
         if self._tts_settings.voice:
@@ -57,6 +79,51 @@ class TtsSpeaker:
         engine.runAndWait()
 
     def _speak_piper(self, text: str) -> None:
+        piper_exe, model_path = self._resolve_piper_assets()
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp:
+            wav_path = Path(temp.name)
+
+        try:
+            command = [
+                piper_exe,
+                "--model",
+                str(model_path),
+                "--output_file",
+                str(wav_path),
+            ]
+            if self._tts_settings.speaker:
+                command.extend(["--speaker", self._tts_settings.speaker])
+            if self._tts_settings.length_scale is not None:
+                command.extend(["--length_scale", str(self._tts_settings.length_scale)])
+
+            completed = subprocess.run(
+                command,
+                input=text,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if completed.returncode != 0:
+                raise RuntimeError(completed.stderr.strip() or "Piper failed to synthesize audio.")
+
+            samples, sample_rate = read_wav_mono(wav_path)
+            playback_settings = self._audio_settings
+            if sample_rate != self._audio_settings.sample_rate:
+                playback_settings = AudioSettings(
+                    sample_rate=sample_rate,
+                    chunk_seconds=self._audio_settings.chunk_seconds,
+                    input_device=self._audio_settings.input_device,
+                    output_device=self._audio_settings.output_device,
+                    peer_input_device=self._audio_settings.peer_input_device,
+                    input_gain=self._audio_settings.input_gain,
+                    playback_gain=self._audio_settings.playback_gain,
+                )
+            play_mono(samples, playback_settings)
+        finally:
+            wav_path.unlink(missing_ok=True)
+
+    def _resolve_piper_assets(self) -> tuple[str, Path]:
         if not self._tts_settings.model_path:
             raise ValueError("tts.model_path is required when tts.engine is 'piper'.")
         piper_exe = resolve_piper_exe(self._tts_settings.piper_exe)
@@ -73,50 +140,11 @@ class TtsSpeaker:
             raise FileNotFoundError(
                 f"Piper voice config not found: {config_path}. Download the matching .onnx.json file."
             )
-
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp:
-            wav_path = Path(temp.name)
-
-        try:
-            command = [
-                piper_exe,
-                "--model",
-                str(model_path),
-                "--output_file",
-                str(wav_path),
-            ]
-            if self._tts_settings.speaker:
-                command.extend(["--speaker", self._tts_settings.speaker])
-
-            completed = subprocess.run(
-                command,
-                input=text,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            if completed.returncode != 0:
-                raise RuntimeError(completed.stderr.strip() or "Piper failed to synthesize audio.")
-
-            samples, sample_rate = read_wav_mono(wav_path)
-            playback_settings = self._audio_settings
-            if sample_rate != self._audio_settings.sample_rate:
-                print(
-                    f"Warning: Piper WAV sample rate is {sample_rate}; playback uses device resampling."
-                )
-                playback_settings = AudioSettings(
-                    sample_rate=sample_rate,
-                    chunk_seconds=self._audio_settings.chunk_seconds,
-                    input_device=self._audio_settings.input_device,
-                    output_device=self._audio_settings.output_device,
-                    peer_input_device=self._audio_settings.peer_input_device,
-                    peer_output_device=self._audio_settings.peer_output_device,
-                    input_gain=self._audio_settings.input_gain,
-                    playback_gain=self._audio_settings.playback_gain,
-                )
-            play_mono(samples, playback_settings)
-        finally:
-            wav_path.unlink(missing_ok=True)
+        runtime_dir = Path(piper_exe).resolve().parent
+        for companion in ("piper_phonemize.dll", "onnxruntime.dll", "espeak-ng-data"):
+            if not (runtime_dir / companion).exists():
+                raise FileNotFoundError(f"Piper runtime asset not found: {runtime_dir / companion}")
+        return piper_exe, model_path
 
 
 def resolve_piper_exe(piper_exe: str) -> str | None:

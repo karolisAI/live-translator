@@ -1,101 +1,77 @@
 # Windows Audio Routing
 
-## Current POC Reference
+## Endpoint Direction
 
-The existing C# POC uses NAudio and Azure Speech. It already proves the important Windows routing concept:
+VB-CABLE names its endpoints from the cable's perspective:
 
-- capture from a microphone or virtual cable recording endpoint
-- synthesize translated audio
-- render translated audio to headphones or a virtual cable playback endpoint
-
-The new product should keep that routing behavior but replace Azure with local inference.
-
-## Endpoint Naming
-
-VB-CABLE naming is easy to confuse:
-
-- `CABLE Input` is usually a Windows playback/render endpoint.
-- `CABLE Output` is usually a Windows recording/capture endpoint.
-
-So when the app wants to send audio into a meeting as a fake microphone, it renders to `CABLE Input`, and the meeting app selects `CABLE Output` as its microphone.
-
-For A/B cables, the names are commonly:
-
-- `CABLE-A Input` as playback endpoint
-- `CABLE-A Output` as recording endpoint
-- `CABLE-B Input` as playback endpoint
-- `CABLE-B Output` as recording endpoint
-
-Always verify names with `list-input-devices` and `list-output-devices` because Windows drivers and language settings may present slightly different names.
-
-## One-Way Meeting Mode
-
-Use this for the first serious call test:
+- `CABLE Input` is a Windows playback device. Live Translator plays translated
+  speech to it.
+- `CABLE Output` is a Windows recording device. The meeting application uses it
+  as its microphone.
 
 ```text
-my physical microphone
-  -> Live Translator app
-  -> translated speech
-  -> CABLE-A Input playback endpoint
-  -> meeting app microphone set to CABLE-A Output
+physical microphone -> Live Translator -> CABLE Input
+CABLE Output -> meeting application microphone
+meeting application speaker -> real headset
 ```
 
-The user should listen to the meeting through normal headphones.
+One matched cable pair is sufficient for the current one-way translator.
 
-The meeting app microphone must be the virtual cable recording endpoint. If it
-is set to the physical microphone, peers will hear the original speech directly
-and then hear the translated speech from the translator.
+## Profile Setup
 
-For the current local POC, prefer Piper for meeting tests. The temporary
-`pyttsx3` engine speaks through the Windows default output device and ignores the
-configured `audio.output_device`, which makes routing mistakes much easier.
+Run:
 
-## Duplex Meeting Mode
-
-Use two cables and headphones:
-
-```text
-outbound:
-my physical microphone
-  -> Live Translator route A
-  -> translated speech
-  -> CABLE-A Input playback endpoint
-  -> meeting app microphone set to CABLE-A Output
-
-inbound:
-meeting app speaker set to CABLE-B Input playback endpoint
-  -> Live Translator captures CABLE-B Output recording endpoint
-  -> translated speech
-  -> physical headphones
+```powershell
+live-translator setup --profile en-de --direction en-de
 ```
 
-Do not route translated output to speakers during duplex tests. Use headphones to avoid feedback into the microphone.
+Repeat with `--profile de-en --direction de-en` for the reverse language
+direction. Setup writes automatic selectors by default. Each run follows the
+Windows default physical microphone and resolves a complete standard CABLE-A
+playback/recording pair.
 
-## Device Selection Rules
+Device lists include the current PortAudio index and Windows host API. Windows
+often publishes the same endpoint through MME, DirectSound, and WASAPI. The
+automatic resolver prefers WASAPI and does not persist the temporary index.
 
-The package should implement friendly matching like the C# POC:
+If the wrong physical microphone is selected, change the Windows default input
+or pass its full friendly name to `setup --input-device`. Use
+`--interactive-devices` only when automatic selection is unsuitable.
 
-- exact friendly-name match first
-- single partial match second
-- if a cable input/output direction is reversed, suggest or auto-map the opposite endpoint
+## Validation
 
-If multiple devices match, the program should fail with a clear message and ask for the full friendly name.
+```powershell
+live-translator doctor --config "$env:LOCALAPPDATA\LiveTranslator\profiles\en-de.yaml"
+live-translator route-test --profile en-de
+```
 
-## Production Audio Driver Path
+`doctor` verifies that each selected endpoint still exists and supports a usable
+sample rate. `route-test` sends an 880 Hz tone to the playback endpoint and
+requires the same tone on the recording endpoint.
 
-Do not start with a kernel-mode audio driver.
+## Meeting Configuration
 
-Reasons:
+Set the meeting application to:
 
-- driver signing is required
-- driver crashes are system-level failures
-- enterprise deployment policies are stricter for drivers
-- debugging driver/audio endpoint issues will slow down MVP validation
+- Microphone: selected `CABLE Output`
+- Speaker: real headset or speakers
 
-Recommended progression:
+Do not select the physical microphone as the meeting microphone. Otherwise the
+remote participant can hear untranslated speech. Do not select `CABLE Input` as
+the meeting speaker; that creates incorrect routing and may feed meeting audio
+back into the microphone path.
 
-1. MVP with VB-CABLE A/B.
-2. Product beta with a documented third-party virtual cable dependency or licensed redistribution.
-3. Enterprise version with a signed virtual audio endpoint driver or a licensed driver component.
+Disable automatic microphone switching. For the first test, disable aggressive
+noise suppression or studio-audio processing until the translated Piper voice
+is known to reach the meeting input.
 
-The app architecture should treat the virtual cable as a replaceable adapter so the pipeline does not care whether output goes to VB-CABLE, a future custom endpoint, or normal headphones.
+## Leak Test
+
+1. Stop Live Translator.
+2. Speak into the physical microphone.
+3. Confirm the meeting microphone meter does not move.
+4. Run `say` with the profile.
+5. Confirm the meeting microphone meter moves only for the synthesized voice.
+
+If translated speech is audible locally, open the Windows recording-device
+properties for `CABLE Output` and disable `Listen to this device`.
