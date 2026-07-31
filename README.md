@@ -36,17 +36,27 @@ cause the translator to hear its own synthesized output.
 
 ## Requirements
 
+For an installation from `LiveTranslatorSetup.exe`:
+
 - Windows 10 or Windows 11
-- Python 3.11
 - A microphone and headset
 - [VB-CABLE](https://vb-audio.com/Cable/) or an equivalent virtual cable
+- Internet access during the first model preparation
+
+The installer bundles the application, Python runtime, Argos translation
+models, Piper runtime, and the English and German voices. Python does not need
+to be installed separately on the target computer.
+
+Building from source additionally requires:
+
+- Python 3.11
 - [Piper Windows runtime](https://github.com/rhasspy/piper/releases/tag/2023.11.14-2)
 - [Piper voices](https://huggingface.co/rhasspy/piper-voices)
 - Argos `en_de` and `de_en` packages
-- Internet access for initial installation and the first Whisper model load
+- Inno Setup 6 when producing the Windows installer
 
 Model binaries, voices, and Piper are intentionally excluded from Git. The
-runtime expects:
+source checkout expects:
 
 ```text
 models/argos/packages/en_de/model/model.bin
@@ -62,6 +72,79 @@ tools/piper/piper_phonemize.dll
 tools/piper/onnxruntime.dll
 tools/piper/espeak-ng-data/
 ```
+
+## Install From the Local Windows Installer
+
+This is the recommended setup for developers, testers, and demo machines that
+do not need to modify the Python source.
+
+1. Install VB-CABLE and restart Windows if its driver installer requests it.
+2. Obtain the internally provided `LiveTranslatorSetup.exe`. A locally built
+   copy is produced at `dist\installer\LiveTranslatorSetup.exe`.
+3. Close any running LiveTranslator process, then run the installer. The
+   application itself is installed per-user and does not require administrator
+   rights. VB-CABLE installation may require them.
+4. Leave **Configure LiveTranslator now** selected on the final installer page
+   to create the default English-to-German profile with automatic audio-device
+   selection.
+
+The installer is currently unsigned. Only continue past a Windows SmartScreen
+warning when the file came from the project's trusted internal distribution
+channel. The installed executable is located at:
+
+```text
+%LOCALAPPDATA%\Programs\LiveTranslator\LiveTranslator.exe
+```
+
+The installer does not add the executable to `PATH`. Open PowerShell and use
+the installed path for setup and verification:
+
+```powershell
+$LT = "$env:LOCALAPPDATA\Programs\LiveTranslator\LiveTranslator.exe"
+$Profiles = "$env:LOCALAPPDATA\LiveTranslator\profiles"
+
+& $LT --help
+& $LT setup --profile en-de --direction en-de
+& $LT setup --profile de-en --direction de-en
+```
+
+Both profiles default to automatic device selection. LiveTranslator follows
+the Windows default physical microphone and finds a matching VB-CABLE playback
+and recording pair without storing fragile device indices.
+
+Prepare the faster-whisper model once while the machine is online, then verify
+translation and audio routing:
+
+```powershell
+& $LT doctor --config "$Profiles\en-de.yaml" --prepare-models
+& $LT doctor --config "$Profiles\de-en.yaml" --prepare-models
+& $LT translate-text --source-language en --target-language de --text "Good morning"
+& $LT translate-text --source-language de --target-language en --text "Guten Morgen"
+& $LT route-test --profile en-de
+& $LT route-test --profile de-en
+```
+
+In Teams, Zoom, or another meeting application, select the configured
+`CABLE Output` endpoint as the microphone and the real headset as the speaker.
+Then start the required direction from PowerShell:
+
+```powershell
+& $LT meeting --profile en-de
+& $LT meeting --profile de-en
+```
+
+Run only one direction per LiveTranslator process. The process listens and
+translates continuously between phrases; `Ctrl+C` is only used when the whole
+meeting session should end.
+
+The Start menu contains **LiveTranslator Setup** and **LiveTranslator Meeting**
+shortcuts. Those shortcuts use the `default` profile; use the PowerShell
+commands above for the named `en-de` and `de-en` profiles.
+
+To update the application, close it and run the newer installer over the
+existing installation. Profiles are stored separately under
+`%LOCALAPPDATA%\LiveTranslator\profiles` and remain available after an update
+or uninstall. Remove the application through Windows **Installed apps**.
 
 ## Source Setup
 
@@ -171,20 +254,29 @@ mode adds audio gates, queue delay, timing, and saved input chunks:
 live-translator meeting --profile en-de --verbose --debug-audio-dir debug-asr
 ```
 
-## Windows Build
+## Build the Windows Installer
 
-The local model and Piper assets above must exist before building:
+Contributors producing a new installer need the source environment and all
+local model, voice, and Piper assets listed above. Install Inno Setup 6 and
+make sure its `ISCC.exe` compiler is available on `PATH`, then run from the
+repository root:
 
 ```powershell
 .\scripts\build_windows.ps1 -InstallBuildTools
-.\dist\LiveTranslator\LiveTranslator.exe --help
-.\scripts\install_windows_user.ps1
+.\scripts\build_inno_installer.ps1
+
+& .\dist\LiveTranslator\LiveTranslator.exe --help
+Get-FileHash .\dist\installer\LiveTranslatorSetup.exe -Algorithm SHA256
 ```
 
-The installed application is written to
-`%LOCALAPPDATA%\Programs\LiveTranslator`. The faster-whisper model remains in
-the Windows user's Hugging Face cache; run `doctor --prepare-models` online once
-on each target machine before relying on offline operation.
+The distributable file is `dist\installer\LiveTranslatorSetup.exe`. It contains
+the complete PyInstaller application folder; recipients do not also need the
+`dist\LiveTranslator` directory. Update `MyAppVersion` in
+`packaging\windows\LiveTranslator.iss` before producing a release build.
+
+The faster-whisper model remains in each Windows user's Hugging Face cache, so
+run `doctor --prepare-models` online once on every target machine before relying
+on offline operation.
 
 ## Verification
 
