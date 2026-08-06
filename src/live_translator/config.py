@@ -7,6 +7,16 @@ from typing import Any
 from .errors import MissingDependency
 
 
+_SUPPORTED_ASR_ENGINES = ("faster-whisper", "parakeet")
+
+# Model names are engine-specific, so switching engines without naming a model
+# has to carry the new engine's default with it.
+_DEFAULT_ASR_MODELS = {
+    "faster-whisper": "base",
+    "parakeet": "nemo-parakeet-tdt-0.6b-v3",
+}
+
+
 @dataclass(frozen=True)
 class AudioSettings:
     sample_rate: int = 16000
@@ -168,6 +178,7 @@ def apply_cli_overrides(
     input_device: str | None = None,
     output_device: str | None = None,
     input_gain: float | None = None,
+    asr_engine: str | None = None,
     model: str | None = None,
     source_language: str | None = None,
     target_language: str | None = None,
@@ -202,6 +213,11 @@ def apply_cli_overrides(
         audio = replace(audio, output_device=output_device)
     if input_gain is not None:
         audio = replace(audio, input_gain=input_gain)
+    if asr_engine is not None:
+        asr = replace(asr, engine=asr_engine)
+        requested = asr_engine.strip().lower()
+        if model is None and requested != config.asr.engine.strip().lower():
+            asr = replace(asr, model=_DEFAULT_ASR_MODELS[requested])
     if model is not None:
         asr = replace(asr, model=model)
     if source_language is not None:
@@ -256,14 +272,14 @@ def apply_cli_overrides(
 
 def validate_config(config: AppConfig) -> None:
     if config.audio.sample_rate != 16000:
-        raise ValueError("audio.sample_rate must be 16000 for faster-whisper")
+        raise ValueError("audio.sample_rate must be 16000")
     if config.audio.chunk_seconds <= 0.0:
         raise ValueError("audio.chunk_seconds must be positive")
     if config.audio.input_gain <= 0.0:
         raise ValueError("audio.input_gain must be positive")
     if config.audio.playback_gain <= 0.0:
         raise ValueError("audio.playback_gain must be positive")
-    if config.asr.engine.lower() != "faster-whisper":
+    if config.asr.engine.lower() not in _SUPPORTED_ASR_ENGINES:
         raise ValueError(f"Unsupported ASR engine: {config.asr.engine}")
     if not config.asr.model:
         raise ValueError("asr.model must not be empty")

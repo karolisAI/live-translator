@@ -20,8 +20,15 @@ dependencies = [
 [project.optional-dependencies]
 translate = ["argostranslate>=1.9,<2"]
 tts = ["pyttsx3>=2.90,<3"]
+parakeet = ["onnx-asr>=0.12,<1", "onnxruntime>=1.20,<2"]
 build = ["pyinstaller>=6,<7"]
-all = ["argostranslate>=1.9,<2", "pyttsx3>=2.90,<3", "pyinstaller>=6,<7"]
+all = [
+    "argostranslate>=1.9,<2",
+    "pyttsx3>=2.90,<3",
+    "onnx-asr>=0.12,<1",
+    "onnxruntime>=1.20,<2",
+    "pyinstaller>=6,<7",
+]
 
 [project.scripts]
 live-translator = "live_translator.cli:main"

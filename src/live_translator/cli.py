@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from live_translator.asr import FasterWhisperAsr
+from live_translator.asr import SUPPORTED_ASR_ENGINES, create_asr
 from live_translator.audio.route_test import test_output_to_input_route
 from live_translator.audio.devices import (
     DeviceRole,
@@ -70,7 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
     meeting.add_argument("--profile", default="default", help="profile name to load")
     meeting.add_argument("--config", default=None, help="explicit profile/config path")
     meeting.add_argument("--seconds", type=float, default=None, help="override fixed-mode chunk duration")
-    meeting.add_argument("--model", default=None, help="faster-whisper model name or local model path")
+    meeting.add_argument("--asr-engine", default=None, choices=SUPPORTED_ASR_ENGINES, help="override the ASR engine")
+    meeting.add_argument("--model", default=None, help="ASR model name or local model path")
     meeting.add_argument("--input-gain", type=float, default=None, help="multiply microphone samples before ASR")
     meeting.add_argument("--debug-audio-dir", default=None, help="write each ASR input chunk as a WAV file")
     meeting.add_argument("--verbose", action="store_true", help="show audio gates and per-segment timings")
@@ -165,7 +166,8 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input-device", default=None, help="input device full or partial friendly name")
     parser.add_argument("--output-device", default=None, help="output device full or partial friendly name")
     parser.add_argument("--input-gain", type=float, default=None, help="multiply microphone samples before ASR")
-    parser.add_argument("--model", default=None, help="faster-whisper model name or local model path")
+    parser.add_argument("--asr-engine", default=None, choices=SUPPORTED_ASR_ENGINES, help="override the ASR engine")
+    parser.add_argument("--model", default=None, help="ASR model name or local model path")
 
 
 def add_language_options(parser: argparse.ArgumentParser) -> None:
@@ -329,7 +331,7 @@ def _audio_device_detail(
 
 
 def _prepare_asr_model(config) -> str:
-    FasterWhisperAsr(config.asr)
+    create_asr(config.asr)
     return f"{config.asr.model} loaded"
 
 
@@ -480,6 +482,7 @@ def build_config(args: argparse.Namespace):
         input_device=getattr(args, "input_device", None),
         output_device=getattr(args, "output_device", None),
         input_gain=getattr(args, "input_gain", None),
+        asr_engine=getattr(args, "asr_engine", None),
         model=getattr(args, "model", None),
         source_language=getattr(args, "source_language", None),
         target_language=getattr(args, "target_language", None),
