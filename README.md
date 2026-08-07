@@ -3,7 +3,9 @@
 Live Translator is an offline, near-real-time Windows speech translator for
 English and German meetings. It uses faster-whisper for speech recognition,
 Argos CTranslate2 models for text translation, Piper for speech synthesis, and
-VB-CABLE to expose translated speech as a meeting microphone.
+VB-CABLE to expose translated speech as a meeting microphone. NVIDIA Parakeet
+TDT is available as an optional alternative recognizer; see
+[Parakeet ASR](#parakeet-asr-optional).
 
 No API key is required after the local models are prepared.
 
@@ -54,6 +56,7 @@ Building from source additionally requires:
 - [Piper voices](https://huggingface.co/rhasspy/piper-voices)
 - Argos `en_de` and `de_en` packages
 - Inno Setup 6 when producing the Windows installer
+- `onnx-asr` and `onnxruntime` only when using the optional Parakeet ASR engine
 
 Model binaries, voices, and Piper are intentionally excluded from Git. The
 source checkout expects:
@@ -178,6 +181,50 @@ files into `models\tts`:
 - [German Thorsten medium](https://huggingface.co/rhasspy/piper-voices/tree/main/de/de_DE/thorsten/medium)
 - [English hfc_male medium](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/hfc_male/medium)
 
+## Parakeet ASR (Optional)
+
+`faster-whisper` is the default recognizer. `parakeet` runs NVIDIA Parakeet TDT
+0.6B v3 through [onnx-asr](https://github.com/istupakov/onnx-asr) and is faster
+on short phrases; see `research/benchmarks.md`. It requires the source
+checkout, not the Windows installer.
+
+Install the optional extra:
+
+```powershell
+python -m pip install -e ".[parakeet]"
+```
+
+Run any command with `--asr-engine parakeet`. Accepted by `meeting`,
+`transcribe-once`, `translate-once`, `loopback`, and `record-test`. The engine's
+default model comes with it, so `--model` is not needed:
+
+```powershell
+$DEEN = "$env:LOCALAPPDATA\LiveTranslator\profiles\de-en.yaml"
+
+live-translator transcribe-once --config $DEEN --asr-engine parakeet --seconds 5
+live-translator meeting --profile de-en --asr-engine parakeet
+```
+
+The first run downloads the model into the Hugging Face cache and needs
+internet access. Later runs are offline.
+
+To make it permanent, edit the `asr` block of the profile at
+`%LOCALAPPDATA%\LiveTranslator\profiles\<name>.yaml`:
+
+```yaml
+asr:
+  engine: parakeet
+  model: nemo-parakeet-tdt-0.6b-v3
+  compute_type: int8
+```
+
+`doctor` takes the engine from the profile and has no `--asr-engine` flag, so
+make that edit before preparing the model:
+
+```powershell
+live-translator doctor --config $DEEN --prepare-models
+```
+
 ## Profiles
 
 List devices and note the Windows host API. WASAPI endpoints are recommended:
@@ -299,3 +346,5 @@ Additional references:
 - `docs/03-windows-audio-routing.md`: Windows endpoint routing
 - `docs/04-meeting-test.md`: meeting validation checklist
 - `docs/05-windows-packaging.md`: executable build and installation
+- `research/benchmarks.md`: measured ASR latency, accuracy, and footprint
+- `research/stt-replacements.md`: ASR engine alternatives that were evaluated
