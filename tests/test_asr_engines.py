@@ -6,64 +6,65 @@ from tempfile import TemporaryDirectory
 import numpy as np
 
 from live_translator.asr import SUPPORTED_ASR_ENGINES, create_asr
-from live_translator.asr.parakeet_engine import ParakeetAsr, _compression_ratio
+from live_translator.asr.parakeet_engine import ParakeetAsr
 from live_translator.config import AsrSettings, apply_cli_overrides, load_config
 
 
 @dataclass
-class FakeTimestampedResult:
+class FakeTranscript:
+    """Duck-types `parakeet_live.Transcript`.
+
+    Declared locally rather than imported so these tests still run when the
+    optional `parakeet-live` package is not installed.
+    """
+
     text: str
-    logprobs: object = None
+    language: str | None = None
+    duration_seconds: float = 1.0
+    inference_seconds: float = 0.1
+    rejected: bool = False
+    rejection_reason: str | None = None
 
 
-class FakeModel:
-    """Stands in for onnx_asr's timestamped adapter."""
+class FakeRecognizer:
+    def __init__(self, transcript: FakeTranscript) -> None:
+        self._transcript = transcript
+        self.calls: list[tuple] = []
 
-    def __init__(self, result: FakeTimestampedResult) -> None:
-        self._result = result
-        self.calls: list[dict] = []
-
-    def recognize(self, audio, **kwargs):
-        self.calls.append(kwargs)
-        return self._result
+    def transcribe(self, audio, sample_rate):
+        self.calls.append((len(audio), sample_rate))
+        return self._transcript
 
 
-def build_parakeet(result: FakeTimestampedResult, **overrides) -> ParakeetAsr:
-    settings = AsrSettings(engine="parakeet", model="nemo-parakeet-tdt-0.6b-v3", **overrides)
+def build_adapter(transcript: FakeTranscript) -> ParakeetAsr:
     engine = ParakeetAsr.__new__(ParakeetAsr)
-    engine._settings = settings
-    engine._model = FakeModel(result)
+    engine._settings = AsrSettings(engine="parakeet", model="nemo-parakeet-tdt-0.6b-v3")
+    engine._recognizer = FakeRecognizer(transcript)
     return engine
 
 
-class ParakeetEngineTests(unittest.TestCase):
-    def test_transcribes_and_reports_timings(self) -> None:
-        engine = build_parakeet(FakeTimestampedResult("Guten Morgen", [-0.01, -0.02]))
+class ParakeetAdapterTests(unittest.TestCase):
+    """The recognizer's own behaviour is covered in packages/parakeet-live.
+    What matters here is the mapping onto this project's TranscriptResult."""
 
-        result = engine.transcribe(np.zeros(16000, dtype=np.float32), 16000)
+    def test_maps_accepted_transcript(self) -> None:
+        engine = build_adapter(
+            FakeTranscript("Guten Morgen", language="de", duration_seconds=2.0)
+        )
+
+        result = engine.transcribe(np.zeros(32000, dtype=np.float32), 16000)
 
         self.assertEqual(result.text, "Guten Morgen")
-        self.assertEqual(result.duration_seconds, 1.0)
+        self.assertEqual(result.language, "de")
+        self.assertEqual(result.duration_seconds, 2.0)
         self.assertEqual(result.rejected_segments, 0)
-        self.assertGreaterEqual(result.inference_seconds, 0.0)
+        self.assertEqual(result.rejection_reasons, ())
+        self.assertEqual(engine._recognizer.calls, [(32000, 16000)])
 
-    def test_passes_source_language_through(self) -> None:
-        engine = build_parakeet(FakeTimestampedResult("hallo", [-0.1]), source_language="de")
-
-        engine.transcribe(np.zeros(1600, dtype=np.float32), 16000)
-
-        self.assertEqual(engine._model.calls[0]["language"], "de")
-
-    def test_omits_language_when_unset(self) -> None:
-        engine = build_parakeet(FakeTimestampedResult("hallo", [-0.1]), source_language=None)
-
-        engine.transcribe(np.zeros(1600, dtype=np.float32), 16000)
-
-        self.assertNotIn("language", engine._model.calls[0])
-
-    def test_empty_output_is_rejected_as_no_speech(self) -> None:
-        # Silence and noise make this model emit zero tokens.
-        engine = build_parakeet(FakeTimestampedResult("", []))
+    def test_maps_rejection_to_segment_count_and_reasons(self) -> None:
+        engine = build_adapter(
+            FakeTranscript("", rejected=True, rejection_reason="no_speech")
+        )
 
         result = engine.transcribe(np.zeros(16000, dtype=np.float32), 16000)
 
@@ -71,48 +72,9 @@ class ParakeetEngineTests(unittest.TestCase):
         self.assertEqual(result.rejected_segments, 1)
         self.assertEqual(result.rejection_reasons, ("no_speech",))
 
-    def test_rejects_low_average_logprob(self) -> None:
-        engine = build_parakeet(
-            FakeTimestampedResult("murmeln", [-2.0, -3.0]), log_prob_threshold=-1.3
-        )
-
-        result = engine.transcribe(np.zeros(16000, dtype=np.float32), 16000)
-
-        self.assertEqual(result.text, "")
-        self.assertEqual(result.rejected_segments, 1)
-        self.assertTrue(result.rejection_reasons[0].startswith("avg_logprob="))
-
-    def test_keeps_confident_output_at_same_threshold(self) -> None:
-        engine = build_parakeet(
-            FakeTimestampedResult("klarer Satz", [-0.01, -0.02]), log_prob_threshold=-1.3
-        )
-
-        self.assertEqual(engine.transcribe(np.zeros(16000, dtype=np.float32), 16000).text, "klarer Satz")
-
-    def test_rejects_short_output(self) -> None:
-        engine = build_parakeet(FakeTimestampedResult("a", [-0.01]), min_segment_chars=2)
-
-        result = engine.transcribe(np.zeros(16000, dtype=np.float32), 16000)
-
-        self.assertEqual(result.rejection_reasons, ("short",))
-
-    def test_rejects_degenerate_repetition(self) -> None:
-        engine = build_parakeet(
-            FakeTimestampedResult("ja " * 400, [-0.01]), compression_ratio_threshold=2.4
-        )
-
-        result = engine.transcribe(np.zeros(16000, dtype=np.float32), 16000)
-
-        self.assertEqual(result.text, "")
-        self.assertTrue(result.rejection_reasons[0].startswith("compression_ratio="))
-
-    def test_missing_logprobs_do_not_crash(self) -> None:
-        engine = build_parakeet(FakeTimestampedResult("hallo", None))
-
-        self.assertEqual(engine.transcribe(np.zeros(1600, dtype=np.float32), 16000).text, "hallo")
-
-    def test_compression_ratio_flags_repetition(self) -> None:
-        self.assertGreater(_compression_ratio("ja " * 400), _compression_ratio("ein normaler Satz"))
+    def test_rejects_wrong_engine_before_importing_the_package(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unsupported ASR engine"):
+            ParakeetAsr(AsrSettings(engine="faster-whisper"))
 
 
 class SilenceGateTests(unittest.TestCase):

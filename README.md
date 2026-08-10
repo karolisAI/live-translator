@@ -184,14 +184,16 @@ files into `models\tts`:
 ## Parakeet ASR (Optional)
 
 `faster-whisper` is the default recognizer. `parakeet` runs NVIDIA Parakeet TDT
-0.6B v3 through [onnx-asr](https://github.com/istupakov/onnx-asr) and is faster
-on short phrases; see `research/benchmarks.md`. It requires the source
-checkout, not the Windows installer.
+0.6B v3 and is faster on short phrases; see `research/benchmarks.md`. It
+requires the source checkout, not the Windows installer.
 
-Install the optional extra:
+The recognizer is a standalone MIT-licensed package in
+[packages/parakeet-live](packages/parakeet-live/) with no dependency on this
+application; `live_translator` only adapts it to its own ASR contract. Install
+it from the checkout, which pulls `onnx-asr` and `onnxruntime` with it:
 
 ```powershell
-python -m pip install -e ".[parakeet]"
+python -m pip install -e .\packages\parakeet-live
 ```
 
 Run any command with `--asr-engine parakeet`. Accepted by `meeting`,
@@ -331,6 +333,13 @@ on offline operation.
 python -m unittest discover -s tests -v
 python -m compileall -q src tests
 python -m pip check
+```
+
+`packages/parakeet-live` has its own suite, run only when that optional package
+is installed:
+
+```powershell
+python -m unittest discover -s .\packages\parakeet-live\tests -t .\packages\parakeet-live\tests -v
 ```
 
 The automated suite covers configuration, audio analysis, resampling,
