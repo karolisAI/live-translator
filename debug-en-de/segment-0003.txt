@@ -1,0 +1,5 @@
+source=Let's start with the project timeline.
+target=Beginnen wir mit der Projektzeitleiste.
+sample_rate=16000
+input_device=auto
+input_gain=1.0

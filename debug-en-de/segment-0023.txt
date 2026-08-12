@@ -1,0 +1,5 @@
+source=Okay, sorry about that, I'm back.
+target=Okay, tut mir leid, ich bin zurück.
+sample_rate=16000
+input_device=auto
+input_gain=1.0

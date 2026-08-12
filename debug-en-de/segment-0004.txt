@@ -1,0 +1,5 @@
+source=I think we should push the deadline back by one week.
+target=Ich denke, wir sollten die Frist um eine Woche verschieben.
+sample_rate=16000
+input_device=auto
+input_gain=1.0

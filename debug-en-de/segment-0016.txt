@@ -1,0 +1,5 @@
+source=Then as we got into the into it we realized the data pipeline
+target=Dann, als wir in die hineinkamen, realisierten wir die Datenpipeline
+sample_rate=16000
+input_device=auto
+input_gain=1.0

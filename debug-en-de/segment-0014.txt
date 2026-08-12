@@ -1,0 +1,5 @@
+source=So, to give you the full context here, we started this project back in March.
+target=Um Ihnen den vollständigen Kontext zu geben, haben wir dieses Projekt im März begonnen.
+sample_rate=16000
+input_device=auto
+input_gain=1.0

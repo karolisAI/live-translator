@@ -1,0 +1,5 @@
+source=I think I was thinking we could actually know, let's not do that.
+target=Ich glaube, ich dachte, wir könnten es tatsächlich wissen, lass uns das nicht tun.
+sample_rate=16000
+input_device=auto
+input_gain=1.0

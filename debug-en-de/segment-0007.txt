@@ -1,0 +1,5 @@
+source=The one from Vilnius office. The retail one.
+target=Die aus dem Büro in Vilnius, die aus dem Einzelhandel.
+sample_rate=16000
+input_device=auto
+input_gain=1.0

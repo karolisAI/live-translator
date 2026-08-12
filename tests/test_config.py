@@ -178,6 +178,26 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.asr.compression_ratio_threshold, 2.2)
         self.assertEqual(config.asr.min_segment_chars, 3)
 
+    def test_accepts_parakeet_asr_engine(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "app.yaml"
+            config_path.write_text(
+                "asr:\n  engine: parakeet\n  model: models/parakeet/nemotron.gguf\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+        self.assertEqual(config.asr.engine, "parakeet")
+
+    def test_rejects_unknown_asr_engine(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "app.yaml"
+            config_path.write_text("asr:\n  engine: bogus\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "Unsupported ASR engine"):
+                load_config(config_path)
+
     def test_cli_overrides_chunking_settings(self) -> None:
         config = apply_cli_overrides(
             AppConfig(),

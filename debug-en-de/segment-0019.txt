@@ -1,0 +1,5 @@
+source=the timeline shifted and that's really the main reason.
+target=Die Zeitlinie hat sich verschoben und das ist wirklich der Hauptgrund.
+sample_rate=16000
+input_device=auto
+input_gain=1.0

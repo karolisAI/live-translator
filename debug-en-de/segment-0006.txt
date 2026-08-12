@@ -1,0 +1,5 @@
+source=Wait, sorry, which clan are we talking about?
+target=Warten Sie, sorry, von welchem Clan sprechen wir?
+sample_rate=16000
+input_device=auto
+input_gain=1.0

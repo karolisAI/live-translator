@@ -256,14 +256,14 @@ def apply_cli_overrides(
 
 def validate_config(config: AppConfig) -> None:
     if config.audio.sample_rate != 16000:
-        raise ValueError("audio.sample_rate must be 16000 for faster-whisper")
+        raise ValueError("audio.sample_rate must be 16000 for the ASR pipeline")
     if config.audio.chunk_seconds <= 0.0:
         raise ValueError("audio.chunk_seconds must be positive")
     if config.audio.input_gain <= 0.0:
         raise ValueError("audio.input_gain must be positive")
     if config.audio.playback_gain <= 0.0:
         raise ValueError("audio.playback_gain must be positive")
-    if config.asr.engine.lower() != "faster-whisper":
+    if config.asr.engine.lower() not in {"faster-whisper", "parakeet"}:
         raise ValueError(f"Unsupported ASR engine: {config.asr.engine}")
     if not config.asr.model:
         raise ValueError("asr.model must not be empty")

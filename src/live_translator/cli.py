@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from live_translator.asr import FasterWhisperAsr
+from live_translator.asr import FasterWhisperAsr, ParakeetAsr
 from live_translator.audio.route_test import test_output_to_input_route
 from live_translator.audio.devices import (
     DeviceRole,
@@ -329,8 +329,11 @@ def _audio_device_detail(
 
 
 def _prepare_asr_model(config) -> str:
-    FasterWhisperAsr(config.asr)
-    return f"{config.asr.model} loaded"
+    if config.asr.engine.lower() == "parakeet":
+        ParakeetAsr(config.asr)
+    else:
+        FasterWhisperAsr(config.asr)
+    return f"{config.asr.engine} {config.asr.model} loaded"
 
 
 def cmd_setup(args: argparse.Namespace) -> int:

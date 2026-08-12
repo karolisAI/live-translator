@@ -1,0 +1,5 @@
+source=Are you free tomorrow?
+target=Bist du morgen frei?
+sample_rate=16000
+input_device=auto
+input_gain=1.0

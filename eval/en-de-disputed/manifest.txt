@@ -1,0 +1,25 @@
+disputed segments: >= 2 word-level edits between faster-whisper (ref) and parakeet (hyp)
+
+segment-0001: edits=2 wer=0.40
+  faster-whisper: I can hear me okay?
+  parakeet:       Hi, can you hear me okay?
+
+segment-0011: edits=4 wer=1.33
+  faster-whisper: Cool, outstanding ride.
+  parakeet:       Cool I'll send the invite.
+
+segment-0015: edits=2 wer=0.20
+  faster-whisper: the initial scope was just the reporting that word but
+  parakeet:       The initial scope was just the reporting dashboard but
+
+segment-0017: edits=2 wer=1.00
+  faster-whisper: under lived.
+  parakeet:       Underneath
+
+segment-0018: edits=5 wer=0.62
+  faster-whisper: needed of the rework 2 which is Y.
+  parakeet:       Neither the full rework too, which is why.
+
+segment-0021: edits=4 wer=0.31
+  faster-whisper: Not because of any single blocker that just scope creep across the board.
+  parakeet:       Not because of any single marker, the gestrope creep across the board.

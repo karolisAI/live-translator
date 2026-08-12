@@ -1,0 +1,5 @@
+source=the initial scope was just the reporting that word but
+target=Der ursprüngliche Umfang war nur die Berichterstattung, die dieses Wort aber
+sample_rate=16000
+input_device=auto
+input_gain=1.0

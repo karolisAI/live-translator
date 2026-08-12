@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from time import perf_counter
 
-from live_translator.asr import FasterWhisperAsr
+from live_translator.asr import FasterWhisperAsr, ParakeetAsr
 from live_translator.asr.faster_whisper_engine import TranscriptResult
 from live_translator.audio.analysis import analyze_audio, has_enough_audio_energy
 from live_translator.audio.devices import describe_device_selection
@@ -18,7 +18,7 @@ from live_translator.tts import TtsSpeaker
 class LocalTranslatorPipeline:
     def __init__(self, config: AppConfig) -> None:
         self._config = config
-        self._asr: FasterWhisperAsr | None = None
+        self._asr: FasterWhisperAsr | ParakeetAsr | None = None
         self._translator: TranslationEngine | None = None
         self._speaker: TtsSpeaker | None = None
         self._verbose = False
@@ -179,9 +179,13 @@ class LocalTranslatorPipeline:
         if interrupted:
             print("Meeting translation ended.")
 
-    def _get_asr(self) -> FasterWhisperAsr:
+    def _get_asr(self) -> FasterWhisperAsr | ParakeetAsr:
         if self._asr is None:
-            self._asr = FasterWhisperAsr(self._config.asr)
+            engine = self._config.asr.engine.lower()
+            if engine == "parakeet":
+                self._asr = ParakeetAsr(self._config.asr)
+            else:
+                self._asr = FasterWhisperAsr(self._config.asr)
         return self._asr
 
     def _get_translator(self) -> TranslationEngine:

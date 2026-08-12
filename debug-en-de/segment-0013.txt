@@ -1,0 +1,5 @@
+source=What I mean to say is we should revisit the budget instead.
+target=Ich möchte damit sagen, dass wir stattdessen den Haushaltsplan überdenken sollten.
+sample_rate=16000
+input_device=auto
+input_gain=1.0

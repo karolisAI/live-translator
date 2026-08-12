@@ -1,0 +1,5 @@
+source=We behind schedule right now.
+target=Wir liegen jetzt hinter dem Zeitplan.
+sample_rate=16000
+input_device=auto
+input_gain=1.0

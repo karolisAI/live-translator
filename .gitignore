@@ -8,7 +8,10 @@ dist/
 build/
 *.egg-info/
 models/
-tools/
+tools/*
+!tools/parakeet/
+tools/parakeet/*
+!tools/parakeet/BUILD.md
 logs/
 debug-asr/
 lt-debug*/

@@ -1,0 +1,5 @@
+source=Not because of any single blocker that just scope creep across the board.
+target=Nicht wegen eines einzelnen Blockers, der nur durch die ganze Linie kriecht.
+sample_rate=16000
+input_device=auto
+input_gain=1.0

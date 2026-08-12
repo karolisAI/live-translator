@@ -1,0 +1,5 @@
+source=I can hear me okay?
+target=Ich kann mich hören, okay?
+sample_rate=16000
+input_device=auto
+input_gain=1.0

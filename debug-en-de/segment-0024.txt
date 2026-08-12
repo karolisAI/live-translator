@@ -1,0 +1,5 @@
+source=I think we should move the meeting to Thursday.
+target=Ich denke, wir sollten das Treffen auf Donnerstag verlegen.
+sample_rate=16000
+input_device=auto
+input_gain=1.0

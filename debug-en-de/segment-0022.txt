@@ -1,0 +1,5 @@
+source=Let me check something one second.
+target=Lassen Sie mich eine Sekunde etwas überprüfen.
+sample_rate=16000
+input_device=auto
+input_gain=1.0

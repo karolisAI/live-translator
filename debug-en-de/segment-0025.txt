@@ -1,0 +1,5 @@
+source=Can we talk about the budgets first?
+target=Können wir zuerst über die Haushalte sprechen?
+sample_rate=16000
+input_device=auto
+input_gain=1.0
