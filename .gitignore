@@ -19,3 +19,5 @@ record-test*.wav
 working-input-open-test.wav
 app.local*.yaml
 app.working-devices.yaml
+.coverage
+call-log*.txt
