@@ -18,13 +18,30 @@ class FakeModel:
     def __init__(self, result: FakeTimestampedResult) -> None:
         self._result = result
         self.calls: list[dict] = []
+        self.audio: list[object] = []
 
     def recognize(self, audio, **kwargs):
         self.calls.append(kwargs)
+        self.audio.append(audio)
         return self._result
 
 
-def build(result: FakeTimestampedResult, **overrides) -> ParakeetRecognizer:
+class FlakyModel:
+    """Emits nothing until the Nth call, like a clip that needs a retry."""
+
+    def __init__(self, results: list[FakeTimestampedResult]) -> None:
+        self._results = results
+        self.calls: list[dict] = []
+        self.audio: list[object] = []
+
+    def recognize(self, audio, **kwargs):
+        self.calls.append(kwargs)
+        self.audio.append(audio)
+        index = min(len(self.calls) - 1, len(self._results) - 1)
+        return self._results[index]
+
+
+def build(result: FakeTimestampedResult, model=None, **overrides) -> ParakeetRecognizer:
     """Build a recognizer around a fake model.
 
     `__init__` exists to load a real ONNX model, so it is bypassed rather than
@@ -35,7 +52,13 @@ def build(result: FakeTimestampedResult, **overrides) -> ParakeetRecognizer:
     recognizer.min_chars = overrides.get("min_chars", 2)
     recognizer.log_prob_threshold = overrides.get("log_prob_threshold", -1.3)
     recognizer.compression_ratio_threshold = overrides.get("compression_ratio_threshold", 2.4)
-    recognizer._model = FakeModel(result)
+    # Off unless a test asks for it, so the retry passes cannot quietly change
+    # what the other tests are asserting about a single recognize() call.
+    recognizer.recover_empty = overrides.get("recover_empty", False)
+    # 0.0 so recovery tests exercise the retry itself rather than the length
+    # gate; the gate has its own tests below.
+    recognizer.min_recovery_seconds = overrides.get("min_recovery_seconds", 0.0)
+    recognizer._model = FakeModel(result) if model is None else model
     return recognizer
 
 
@@ -153,6 +176,125 @@ class RejectionTests(unittest.TestCase):
 
     def test_compression_ratio_flags_repetition(self) -> None:
         self.assertGreater(compression_ratio("ja " * 400), compression_ratio("ein normaler Satz"))
+
+
+class RecoveryTests(unittest.TestCase):
+    """The decoder sometimes emits nothing for audio that does contain speech."""
+
+    def _flaky(self, texts, **overrides):
+        results = [FakeTimestampedResult(t, [-0.01]) for t in texts]
+        model = FlakyModel(results)
+        return build(results[0], model=model, recover_empty=True, **overrides), model
+
+    def test_retries_when_the_first_pass_returns_nothing(self) -> None:
+        recognizer, model = self._flaky(["", "recovered text"])
+
+        transcript = recognizer.transcribe(np.zeros(16000, dtype=np.float32), 16000)
+
+        self.assertEqual(transcript.text, "recovered text")
+        self.assertFalse(transcript.rejected)
+        self.assertEqual(transcript.recovered_by, "pad")
+        self.assertEqual(len(model.calls), 2)
+
+    def test_falls_through_to_the_second_pass(self) -> None:
+        recognizer, model = self._flaky(["", "", "found on gain"])
+
+        transcript = recognizer.transcribe(np.zeros(16000, dtype=np.float32), 16000)
+
+        self.assertEqual(transcript.text, "found on gain")
+        self.assertEqual(transcript.recovered_by, "gain")
+        self.assertEqual(len(model.calls), 3)
+
+    def test_gives_up_and_still_reports_no_speech(self) -> None:
+        # Genuine silence stays silent: every pass returns nothing, so the
+        # recogniser must not invent an answer.
+        recognizer, model = self._flaky(["", "", ""])
+
+        transcript = recognizer.transcribe(np.zeros(16000, dtype=np.float32), 16000)
+
+        self.assertEqual(transcript.text, "")
+        self.assertTrue(transcript.rejected)
+        self.assertEqual(transcript.rejection_reason, "no_speech")
+        self.assertIsNone(transcript.recovered_by)
+        self.assertEqual(len(model.calls), 3)
+
+    def test_no_retry_when_the_first_pass_already_has_text(self) -> None:
+        recognizer, model = self._flaky(["straight away", "should not be reached"])
+
+        transcript = recognizer.transcribe(np.zeros(16000, dtype=np.float32), 16000)
+
+        self.assertEqual(transcript.text, "straight away")
+        self.assertIsNone(transcript.recovered_by)
+        self.assertEqual(len(model.calls), 1)
+
+    def test_disabled_by_default_construction_flag(self) -> None:
+        recognizer, model = self._flaky(["", "recovered"], )
+        recognizer.recover_empty = False
+
+        transcript = recognizer.transcribe(np.zeros(16000, dtype=np.float32), 16000)
+
+        self.assertEqual(transcript.text, "")
+        self.assertEqual(transcript.rejection_reason, "no_speech")
+        self.assertEqual(len(model.calls), 1)
+
+    def test_retries_keep_the_language_option(self) -> None:
+        recognizer, model = self._flaky(["", "wieder da"], language="de")
+
+        recognizer.transcribe(np.zeros(16000, dtype=np.float32), 16000)
+
+        self.assertEqual([c["language"] for c in model.calls], ["de", "de"])
+
+    def test_passes_alter_the_audio_they_resubmit(self) -> None:
+        recognizer, model = self._flaky(["", "", "text"])
+        audio = np.full(1600, 0.4, dtype=np.float32)
+
+        recognizer.transcribe(audio, 16000)
+
+        first, padded, amplified = model.audio
+        self.assertEqual(len(first), 1600)
+        self.assertGreater(len(padded), len(first))          # silence margins added
+        self.assertAlmostEqual(float(np.max(amplified)), 0.8, places=5)  # gain applied
+
+    def test_amplified_audio_stays_in_range(self) -> None:
+        recognizer, model = self._flaky(["", "", "text"])
+
+        recognizer.transcribe(np.full(1600, 0.9, dtype=np.float32), 16000)
+
+        self.assertLessEqual(float(np.max(np.abs(model.audio[-1]))), 1.0)
+
+
+class RecoveryLengthGateTests(unittest.TestCase):
+    """Short clips are left alone: retrying them produced noise, not words."""
+
+    def _flaky(self, **overrides):
+        results = [FakeTimestampedResult("", [-0.01]), FakeTimestampedResult("late text", [-0.01])]
+        model = FlakyModel(results)
+        recognizer = build(results[0], model=model, recover_empty=True, **overrides)
+        return recognizer, model
+
+    def test_skips_recovery_below_the_threshold(self) -> None:
+        recognizer, model = self._flaky(min_recovery_seconds=3.0)
+
+        transcript = recognizer.transcribe(np.zeros(16000, dtype=np.float32), 16000)  # 1.0s
+
+        self.assertEqual(transcript.text, "")
+        self.assertEqual(transcript.rejection_reason, "no_speech")
+        self.assertEqual(len(model.calls), 1)
+
+    def test_recovers_at_or_above_the_threshold(self) -> None:
+        recognizer, model = self._flaky(min_recovery_seconds=3.0)
+
+        transcript = recognizer.transcribe(np.zeros(48000, dtype=np.float32), 16000)  # 3.0s
+
+        self.assertEqual(transcript.text, "late text")
+        self.assertEqual(transcript.recovered_by, "pad")
+
+    def test_zero_threshold_recovers_everything(self) -> None:
+        recognizer, model = self._flaky(min_recovery_seconds=0.0)
+
+        transcript = recognizer.transcribe(np.zeros(1600, dtype=np.float32), 16000)  # 0.1s
+
+        self.assertEqual(transcript.text, "late text")
 
 
 class QuantizationTests(unittest.TestCase):
