@@ -6,6 +6,16 @@ from typing import Any
 
 from .errors import MissingDependency
 
+_SUPPORTED_ASR_ENGINES = ("faster-whisper", "parakeet", "parakeet-live")
+
+# Model names are engine-specific, so switching engines without naming a model
+# has to carry the new engine's default with it.
+_DEFAULT_ASR_MODELS = {
+    "faster-whisper": "base",
+    "parakeet": "models/parakeet/nemotron-3.5-asr-streaming-0.6b-q8_0.gguf",
+    "parakeet-live": "nemo-parakeet-tdt-0.6b-v3",
+}
+
 
 @dataclass(frozen=True)
 class AudioSettings:
@@ -263,7 +273,7 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("audio.input_gain must be positive")
     if config.audio.playback_gain <= 0.0:
         raise ValueError("audio.playback_gain must be positive")
-    if config.asr.engine.lower() not in {"faster-whisper", "parakeet"}:
+    if config.asr.engine.lower() not in _SUPPORTED_ASR_ENGINES:
         raise ValueError(f"Unsupported ASR engine: {config.asr.engine}")
     if not config.asr.model:
         raise ValueError("asr.model must not be empty")

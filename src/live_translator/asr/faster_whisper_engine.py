@@ -1,21 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 
+from live_translator.asr.base import TranscriptResult
 from live_translator.config import AsrSettings
 from live_translator.errors import MissingDependency
 
-
-@dataclass(frozen=True)
-class TranscriptResult:
-    text: str
-    language: str | None
-    duration_seconds: float
-    inference_seconds: float
-    rejected_segments: int = 0
-    rejection_reasons: tuple[str, ...] = ()
+__all__ = ["FasterWhisperAsr", "TranscriptResult"]
 
 
 class FasterWhisperAsr:

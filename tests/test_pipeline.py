@@ -21,23 +21,24 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(workers._segments.maxsize, 3)
         self.assertEqual(workers._playback.maxsize, 2)
 
-    def test_get_asr_dispatches_to_parakeet_when_configured(self) -> None:
+    def test_get_asr_delegates_to_create_asr(self) -> None:
         pipeline = LocalTranslatorPipeline(AppConfig(asr=AsrSettings(engine="parakeet")))
 
-        with patch("live_translator.pipeline.ParakeetAsr") as fake_parakeet_cls:
+        with patch("live_translator.pipeline.create_asr") as fake_create_asr:
             asr = pipeline._get_asr()
 
-        fake_parakeet_cls.assert_called_once_with(pipeline._config.asr)
-        self.assertIs(asr, fake_parakeet_cls.return_value)
+        fake_create_asr.assert_called_once_with(pipeline._config.asr)
+        self.assertIs(asr, fake_create_asr.return_value)
 
-    def test_get_asr_dispatches_to_faster_whisper_by_default(self) -> None:
+    def test_get_asr_caches_the_engine_across_calls(self) -> None:
         pipeline = LocalTranslatorPipeline(AppConfig())
 
-        with patch("live_translator.pipeline.FasterWhisperAsr") as fake_whisper_cls:
-            asr = pipeline._get_asr()
+        with patch("live_translator.pipeline.create_asr") as fake_create_asr:
+            first = pipeline._get_asr()
+            second = pipeline._get_asr()
 
-        fake_whisper_cls.assert_called_once_with(pipeline._config.asr)
-        self.assertIs(asr, fake_whisper_cls.return_value)
+        fake_create_asr.assert_called_once()
+        self.assertIs(first, second)
 
 
 if __name__ == "__main__":

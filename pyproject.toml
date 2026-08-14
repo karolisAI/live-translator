@@ -22,7 +22,8 @@ translate = ["argostranslate>=1.9,<2"]
 tts = ["pyttsx3>=2.90,<3"]
 build = ["pyinstaller>=6,<7"]
 dev = ["pytest>=8,<10", "pytest-cov>=6,<8"]
-all = ["argostranslate>=1.9,<2", "pyttsx3>=2.90,<3", "pyinstaller>=6,<7", "pytest>=8,<10", "pytest-cov>=6,<8"]
+parakeet-live = ["parakeet-live"]
+all = ["argostranslate>=1.9,<2", "pyttsx3>=2.90,<3", "pyinstaller>=6,<7", "pytest>=8,<10", "pytest-cov>=6,<8", "parakeet-live"]
 
 [project.scripts]
 live-translator = "live_translator.cli:main"

@@ -116,16 +116,29 @@ check, not the download source.
 The model is `nemotron-3.5-asr-streaming-0.6b`, converted to GGUF. Two
 precision levels have been tested:
 
-| Variant | Disk size | Model-load memory | English WER (25 real segments) |
+| Variant | Disk size | Model-load memory | English WER (25 real segments, this repo's own test) |
 |---|---|---|---|
 | f16 | ~1.4GB | +1420MB | 14.1% (10.4% vs. a beam=5 whisper reference) |
 | q8_0 | ~940MB | +941MB | 15.1% |
 
-f16 is the more accurate option; q8_0 trades ~1 WER point for roughly a
-third less memory (and it's a real cost, not just noise — e.g. one segment
-lost its opening two words entirely under q8_0 that f16 transcribed
-perfectly). Neither has been tested on real meeting-style German audio yet
-— see Status above.
+**Run q8_0, not f16.** The table above (this repo's original 25-segment test)
+found f16 slightly more accurate, and that's what shipped as the
+recommendation initially — but it's now superseded. Edvinas independently
+re-tested both variants against `parakeet-live` using a more rigorous
+shared-VAD-segment, shared-scorer harness, confirmed **twice, on two
+languages**: q8_0 is *both* more accurate and faster in each case —
+English 3.99% (q8_0) vs. 4.09% (f16) WER, and q8_0 is 23% faster (RTF 0.192
+vs. 0.250) and uses 500MB less RAM either way. Two independent
+confirmations across languages outweighs this repo's single English-only
+test, so q8_0 is the recommendation now — the original table above is kept
+for its own record, not as the current guidance. See Edvinas's
+`parakeet-engine-comparison-de.md` §6 and `parakeet-engine-comparison-en.md`
+§9.5 for the full comparison — as of this note these aren't confirmed
+committed anywhere in this repo, so ask Edvinas directly if you need the
+source documents.
+
+Neither variant has been tested on real meeting-style German audio yet
+(only DW broadcast news) — see Status above.
 
 Regenerating either variant (rather than copying the GGUF as a binary blob):
 
@@ -175,7 +188,8 @@ https://drive.proton.me/urls/RJCBWEKXQC#2BPzT9pqh6Et
    there's nothing to set for it. The model path *is* configurable: reuse
    the existing `asr.model` field (the same one faster-whisper uses for its
    model name) and point it at your GGUF file's path, e.g.
-   `asr.model: models/parakeet/nemotron-3.5-asr-streaming-0.6b-f16.gguf`.
+   `asr.model: models/parakeet/nemotron-3.5-asr-streaming-0.6b-q8_0.gguf`
+   (q8_0, not f16 — see "Getting the model" above for why).
 4. Set `config.asr.engine: parakeet` in your profile config to opt in —
    default remains `faster-whisper`, unchanged.
 

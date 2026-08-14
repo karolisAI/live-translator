@@ -21,3 +21,4 @@ app.local*.yaml
 app.working-devices.yaml
 .coverage
 call-log*.txt
+research/

@@ -4,7 +4,7 @@ import zlib
 from time import perf_counter
 from typing import Any
 
-from live_translator.asr.faster_whisper_engine import TranscriptResult
+from live_translator.asr.base import TranscriptResult
 from live_translator.asr.parakeet_capi import ParakeetModel, set_num_threads
 from live_translator.config import AsrSettings
 
