@@ -160,8 +160,6 @@ class ConfigTests(unittest.TestCase):
                 "\n".join(
                     [
                         "asr:",
-                        "  condition_on_previous_text: false",
-                        "  no_speech_threshold: 0.5",
                         "  log_prob_threshold: -0.8",
                         "  compression_ratio_threshold: 2.2",
                         "  min_segment_chars: 3",
@@ -172,8 +170,6 @@ class ConfigTests(unittest.TestCase):
 
             config = load_config(config_path)
 
-        self.assertFalse(config.asr.condition_on_previous_text)
-        self.assertEqual(config.asr.no_speech_threshold, 0.5)
         self.assertEqual(config.asr.log_prob_threshold, -0.8)
         self.assertEqual(config.asr.compression_ratio_threshold, 2.2)
         self.assertEqual(config.asr.min_segment_chars, 3)
@@ -181,7 +177,6 @@ class ConfigTests(unittest.TestCase):
     def test_cli_overrides_chunking_settings(self) -> None:
         config = apply_cli_overrides(
             AppConfig(),
-            no_speech_threshold=0.88,
             log_prob_threshold=-1.7,
             chunker_mode="vad",
             vad_threshold=0.02,
@@ -193,7 +188,6 @@ class ConfigTests(unittest.TestCase):
             max_seconds=5.0,
         )
 
-        self.assertEqual(config.asr.no_speech_threshold, 0.88)
         self.assertEqual(config.asr.log_prob_threshold, -1.7)
         self.assertEqual(config.chunking.mode, "vad")
         self.assertEqual(config.chunking.rms_threshold, 0.02)
@@ -224,7 +218,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.audio.peer_input_device, "CABLE Output")
         self.assertEqual(config.audio.input_gain, 1.0)
         self.assertEqual(config.audio.playback_gain, 0.7)
-        self.assertEqual(config.asr.model, "base")
+        self.assertEqual(config.asr.model, "nemo-parakeet-tdt-0.6b-v3")
         self.assertEqual(config.tts.model_path, "models/tts/en_US-hfc_male-medium.onnx")
         self.assertEqual(config.chunking.mode, "vad")
         self.assertEqual(config.chunking.min_segment_seconds, 0.8)
@@ -235,8 +229,6 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.asr.cpu_threads, 8)
         self.assertEqual(config.realtime.recognition_queue_size, 2)
         self.assertEqual(config.realtime.playback_queue_size, 1)
-        self.assertFalse(config.asr.condition_on_previous_text)
-        self.assertEqual(config.asr.no_speech_threshold, 0.75)
         self.assertEqual(config.asr.log_prob_threshold, -1.3)
 
     def test_loads_realtime_queue_sizes(self) -> None:

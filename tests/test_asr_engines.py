@@ -12,10 +12,9 @@ from live_translator.config import AsrSettings, apply_cli_overrides, load_config
 
 @dataclass
 class FakeTranscript:
-    """Duck-types `parakeet_live.Transcript`.
+    """Duck-types `live_translator.asr.recognizer.Transcript`.
 
-    Declared locally rather than imported so these tests still run when the
-    optional `parakeet-live` package is not installed.
+    Declared locally rather than imported so these tests do not need onnx-asr.
     """
 
     text: str
@@ -44,7 +43,7 @@ def build_adapter(transcript: FakeTranscript) -> ParakeetAsr:
 
 
 class ParakeetAdapterTests(unittest.TestCase):
-    """The recognizer's own behaviour is covered in packages/parakeet-live.
+    """The recognizer's own behaviour is covered in test_recognizer.py.
     What matters here is the mapping onto this project's TranscriptResult."""
 
     def test_maps_accepted_transcript(self) -> None:
@@ -72,9 +71,9 @@ class ParakeetAdapterTests(unittest.TestCase):
         self.assertEqual(result.rejected_segments, 1)
         self.assertEqual(result.rejection_reasons, ("no_speech",))
 
-    def test_rejects_wrong_engine_before_importing_the_package(self) -> None:
+    def test_rejects_wrong_engine_before_loading_the_model(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unsupported ASR engine"):
-            ParakeetAsr(AsrSettings(engine="faster-whisper"))
+            ParakeetAsr(AsrSettings(engine="whisper.cpp"))
 
 
 class SilenceGateTests(unittest.TestCase):
@@ -115,7 +114,7 @@ class AsrFactoryTests(unittest.TestCase):
             create_asr(AsrSettings(engine="whisper.cpp"))
 
     def test_supported_engines_list(self) -> None:
-        self.assertEqual(SUPPORTED_ASR_ENGINES, ("faster-whisper", "parakeet"))
+        self.assertEqual(SUPPORTED_ASR_ENGINES, ("parakeet",))
 
 
 class ParakeetConfigTests(unittest.TestCase):
@@ -148,35 +147,24 @@ class ParakeetConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unsupported ASR engine"):
                 load_config(config_path)
 
-    def test_cli_override_switches_engine_and_default_model(self) -> None:
+    def test_cli_model_override_wins(self) -> None:
         from live_translator.config import AppConfig
 
-        # A profile carries a Whisper model name; switching engines alone must
-        # not hand 'base' to Parakeet.
-        config = AppConfig(asr=AsrSettings(engine="faster-whisper", model="base"))
+        config = AppConfig(asr=AsrSettings(engine="parakeet"))
+
+        updated = apply_cli_overrides(config, model="custom/model")
+
+        self.assertEqual(updated.asr.engine, "parakeet")
+        self.assertEqual(updated.asr.model, "custom/model")
+
+    def test_cli_engine_override_keeps_configured_model(self) -> None:
+        from live_translator.config import AppConfig
+
+        config = AppConfig(asr=AsrSettings(engine="parakeet", model="custom/model"))
 
         updated = apply_cli_overrides(config, asr_engine="parakeet")
 
-        self.assertEqual(updated.asr.engine, "parakeet")
-        self.assertEqual(updated.asr.model, "nemo-parakeet-tdt-0.6b-v3")
-
-    def test_explicit_model_wins_over_engine_default(self) -> None:
-        from live_translator.config import AppConfig
-
-        config = AppConfig(asr=AsrSettings(engine="faster-whisper", model="base"))
-
-        updated = apply_cli_overrides(config, asr_engine="parakeet", model="custom/model")
-
         self.assertEqual(updated.asr.model, "custom/model")
-
-    def test_same_engine_keeps_configured_model(self) -> None:
-        from live_translator.config import AppConfig
-
-        config = AppConfig(asr=AsrSettings(engine="faster-whisper", model="small"))
-
-        updated = apply_cli_overrides(config, asr_engine="faster-whisper")
-
-        self.assertEqual(updated.asr.model, "small")
 
 
 if __name__ == "__main__":

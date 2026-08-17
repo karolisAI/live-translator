@@ -7,14 +7,9 @@ from typing import Any
 from .errors import MissingDependency
 
 
-_SUPPORTED_ASR_ENGINES = ("faster-whisper", "parakeet")
+_SUPPORTED_ASR_ENGINES = ("parakeet",)
 
-# Model names are engine-specific, so switching engines without naming a model
-# has to carry the new engine's default with it.
-_DEFAULT_ASR_MODELS = {
-    "faster-whisper": "base",
-    "parakeet": "nemo-parakeet-tdt-0.6b-v3",
-}
+_DEFAULT_ASR_MODEL = "nemo-parakeet-tdt-0.6b-v3"
 
 
 @dataclass(frozen=True)
@@ -30,15 +25,12 @@ class AudioSettings:
 
 @dataclass(frozen=True)
 class AsrSettings:
-    engine: str = "faster-whisper"
-    model: str = "base"
-    device: str = "auto"
-    compute_type: str = "auto"
+    engine: str = "parakeet"
+    model: str = _DEFAULT_ASR_MODEL
+    device: str = "cpu"
+    compute_type: str = "int8"
     cpu_threads: int = 0
     source_language: str | None = "en"
-    beam_size: int = 1
-    condition_on_previous_text: bool = False
-    no_speech_threshold: float = 0.75
     log_prob_threshold: float = -1.3
     compression_ratio_threshold: float = 2.4
     min_segment_chars: int = 2
@@ -111,9 +103,6 @@ _SECTION_KEYS: dict[str, set[str]] = {
         "compute_type",
         "cpu_threads",
         "source_language",
-        "beam_size",
-        "condition_on_previous_text",
-        "no_speech_threshold",
         "log_prob_threshold",
         "compression_ratio_threshold",
         "min_segment_chars",
@@ -188,7 +177,6 @@ def apply_cli_overrides(
     tts_model_path: str | None = None,
     piper_exe: str | None = None,
     tts_length_scale: float | None = None,
-    no_speech_threshold: float | None = None,
     log_prob_threshold: float | None = None,
     chunker_mode: str | None = None,
     vad_threshold: float | None = None,
@@ -215,9 +203,6 @@ def apply_cli_overrides(
         audio = replace(audio, input_gain=input_gain)
     if asr_engine is not None:
         asr = replace(asr, engine=asr_engine)
-        requested = asr_engine.strip().lower()
-        if model is None and requested != config.asr.engine.strip().lower():
-            asr = replace(asr, model=_DEFAULT_ASR_MODELS[requested])
     if model is not None:
         asr = replace(asr, model=model)
     if source_language is not None:
@@ -237,8 +222,6 @@ def apply_cli_overrides(
         tts = replace(tts, piper_exe=piper_exe)
     if tts_length_scale is not None:
         tts = replace(tts, length_scale=tts_length_scale)
-    if no_speech_threshold is not None:
-        asr = replace(asr, no_speech_threshold=no_speech_threshold)
     if log_prob_threshold is not None:
         asr = replace(asr, log_prob_threshold=log_prob_threshold)
     if chunker_mode is not None:
@@ -283,12 +266,8 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError(f"Unsupported ASR engine: {config.asr.engine}")
     if not config.asr.model:
         raise ValueError("asr.model must not be empty")
-    if config.asr.beam_size <= 0:
-        raise ValueError("asr.beam_size must be positive")
     if config.asr.cpu_threads < 0:
         raise ValueError("asr.cpu_threads must not be negative")
-    if not 0.0 < config.asr.no_speech_threshold <= 1.0:
-        raise ValueError("asr.no_speech_threshold must be greater than 0 and at most 1")
     if config.asr.compression_ratio_threshold <= 0.0:
         raise ValueError("asr.compression_ratio_threshold must be positive")
     if config.asr.min_segment_chars <= 0:
@@ -388,15 +367,12 @@ def _load_audio(raw: dict[str, Any]) -> AudioSettings:
 
 def _load_asr(raw: dict[str, Any]) -> AsrSettings:
     return AsrSettings(
-        engine=_str(raw, "engine", "faster-whisper"),
-        model=_str(raw, "model", "base"),
-        device=_str(raw, "device", "auto"),
-        compute_type=_str(raw, "compute_type", "auto"),
+        engine=_str(raw, "engine", "parakeet"),
+        model=_str(raw, "model", _DEFAULT_ASR_MODEL),
+        device=_str(raw, "device", "cpu"),
+        compute_type=_str(raw, "compute_type", "int8"),
         cpu_threads=_nonnegative_int(raw, "cpu_threads", 0),
         source_language=_str_or_none(raw, "source_language", "en"),
-        beam_size=_int(raw, "beam_size", 1),
-        condition_on_previous_text=_bool(raw, "condition_on_previous_text", False),
-        no_speech_threshold=_float(raw, "no_speech_threshold", 0.75),
         log_prob_threshold=_float_any(raw, "log_prob_threshold", -1.3),
         compression_ratio_threshold=_float(raw, "compression_ratio_threshold", 2.4),
         min_segment_chars=_int(raw, "min_segment_chars", 2),

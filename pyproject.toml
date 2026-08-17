@@ -10,8 +10,9 @@ requires-python = ">=3.11"
 dependencies = [
     "av>=11,<19",
     "ctranslate2>=4,<5",
-    "faster-whisper>=1.0,<2",
     "numpy>=1.26,<3",
+    "onnx-asr>=0.12,<1",
+    "onnxruntime>=1.20,<2",
     "PyYAML>=6,<7",
     "sentencepiece>=0.2,<1",
     "sounddevice>=0.4,<1",
@@ -26,10 +27,6 @@ all = [
     "pyttsx3>=2.90,<3",
     "pyinstaller>=6,<7",
 ]
-
-# The optional Parakeet ASR engine lives in packages/parakeet-live and is not
-# published yet, so it cannot be declared as an extra here. Install it from the
-# checkout: python -m pip install -e .\packages\parakeet-live
 
 [project.scripts]
 live-translator = "live_translator.cli:main"

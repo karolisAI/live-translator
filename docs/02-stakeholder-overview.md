@@ -18,7 +18,7 @@ Physical Microphone
   -> Continuous sounddevice InputStream
   -> Adaptive phrase detection
   -> Bounded recognition queue
-  -> faster-whisper speech recognition
+  -> Parakeet speech recognition
   -> Argos English/German translation
   -> Bounded playback queue
   -> Piper target-language speech
@@ -39,7 +39,7 @@ oldest pending phrase is skipped and the operator sees a warning.
 | Microphone capture and playback | sounddevice / PortAudio |
 | Audio representation | NumPy with PyAV/libswresample, 16 kHz mono inference path |
 | Phrase detection | Adaptive RMS/peak VAD with pre-roll and trailing silence |
-| Speech recognition | faster-whisper on CTranslate2 |
+| Speech recognition | Parakeet TDT 0.6B v3 on onnxruntime |
 | Text translation | Argos CTranslate2 models with SentencePiece |
 | Speech synthesis | Piper CLI with local ONNX voices |
 | Meeting routing | VB-CABLE virtual playback and recording endpoints |
@@ -50,7 +50,7 @@ oldest pending phrase is skipped and the operator sees a warning.
 
 After dependencies and models are installed, the speech recognition,
 translation, and synthesis path runs locally. It does not require a cloud API
-key. Named faster-whisper models are loaded from the Windows user's local
+key. Named Parakeet models are loaded from the Windows user's local
 Hugging Face cache.
 
 Two profiles are generated because direction and output voice are explicit:
@@ -61,12 +61,10 @@ Two profiles are generated because direction and output voice are explicit:
 ## Performance Profile
 
 The current demo machine is an AMD Ryzen 5 7535HS with 12 logical processors
-and no CUDA device. Generated profiles use the faster-whisper `base` model on
-CPU with `int8` compute and eight inference threads. On clean synthetic
-benchmark speech, this mode was
-faster than `auto` compute while retaining the more accurate German transcript.
-The `tiny` model was faster but produced a German word error, so it is not the
-demo default.
+and no CUDA device. Generated profiles use Parakeet TDT 0.6B v3 on CPU with
+`int8` compute and eight inference threads. One model serves both directions.
+Measured on this machine, recognition runs at roughly a fifth of real time in
+under 800 MB, leaving headroom for translation and synthesis on the same CPU.
 
 Perceived latency is reduced with a 450 ms trailing-silence commit, a 0.8-second
 minimum phrase window, a 5-second maximum phrase, and separate recognition and
@@ -75,17 +73,17 @@ or accuracy guarantees.
 
 The 450 ms value is a trailing acoustic-silence threshold, not a one-second
 timer or an end-word detector. Audio is evaluated in 30 ms frames. The current
-release sends a completed phrase to faster-whisper after that boundary (or at
+release sends a completed phrase to the recognizer after that boundary (or at
 the 5-second ceiling), while the microphone immediately continues collecting
 the next phrase.
 
 ## Operational Checks
 
 - `doctor --prepare-models` validates dependencies, configured endpoints,
-  translation assets, Piper assets, and Whisper model loading.
+  translation assets, Piper assets, and speech model loading.
 - `route-test` sends a known 880 Hz tone and verifies that the paired virtual
   microphone receives that specific signal.
-- Low-energy audio and low-confidence Whisper segments are rejected before
+- Low-energy audio and low-confidence recognized segments are rejected before
   speech synthesis.
 - Direction profiles and role-based automatic device selectors are stored
   outside the repository under the current Windows user's local application

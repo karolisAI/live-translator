@@ -14,7 +14,7 @@ a conversation simultaneously.
 
 Meeting mode completes these steps before reporting `Ready`:
 
-1. Load the configured faster-whisper model.
+1. Load the configured Parakeet model.
 2. Open the configured Argos CTranslate2 model and SentencePiece tokenizer.
 3. Validate the Piper executable, voice model, and voice JSON.
 4. Resolve the configured input and output devices when capture begins.
@@ -28,7 +28,7 @@ starting the meeting loop.
 long-lived microphone InputStream
   -> VAD segmenter
   -> bounded phrase queue
-  -> faster-whisper ASR and confidence rejection
+  -> Parakeet ASR and confidence rejection
   -> Argos CTranslate2 translation
   -> bounded playback queue
   -> Piper synthesis and virtual-cable playback
@@ -63,7 +63,7 @@ The active settings behave as follows:
 
 The microphone stream remains open after a commit. The completed segment is
 queued for recognition while the same capture stream begins collecting the next
-phrase. Faster-whisper still receives each completed segment as one offline
+phrase. The recognizer still receives each completed segment as one offline
 inference request; the current release does not revise partial transcripts as
 new words arrive.
 
@@ -72,13 +72,13 @@ whole-phrase Piper synthesis, output stream startup, and playback add their own
 latency.
 
 Before ASR, the energy gate requires a configurable ratio of active frames.
-After ASR, segments can be rejected using Whisper no-speech probability,
-average log probability, compression ratio, and minimum text length.
+After ASR, segments can be rejected on empty output, average log probability,
+compression ratio, and minimum text length.
 
 ## Concurrency Model
 
 VAD and rolling meeting modes have three ordered stages. Capture and VAD run continuously on the
-long-lived input stream. A single recognition worker owns faster-whisper and
+long-lived input stream. A single recognition worker owns the recognizer and
 Argos. A separate playback worker owns Piper and sounddevice output. Recognition
 therefore continues while an earlier translation is being synthesized or
 played, and neither stage closes the microphone stream.
@@ -124,7 +124,7 @@ reopens capture for each block; it does not use the persistent VAD stream.
 
 ## Models
 
-- ASR: faster-whisper through CTranslate2
+- ASR: Parakeet TDT through onnx-asr and onnxruntime
 - Text translation: Argos `en_de` and `de_en` CTranslate2 packages
 - Speech output: Piper CLI and local ONNX voices
 
@@ -142,7 +142,7 @@ Argos packages are discovered in `ARGOS_PACKAGES_DIR`, the bundled
 Piper models and the executable are resolved relative to the working directory,
 the installed executable directory, or the PyInstaller bundle directory.
 
-Named faster-whisper models use the Hugging Face user cache. That cache is not
+Named Parakeet models use the Hugging Face user cache. That cache is not
 inside this repository or the packaged application.
 
 ## Error Handling
@@ -161,5 +161,5 @@ ambient noise on the wrong input from producing a false pass.
 - No simultaneous incoming-audio translation
 - Phrase-level output rather than stabilized word-by-word streaming
 - No partial transcript stabilization or streaming TTS
-- No bundled faster-whisper model in the current Windows build
+- No bundled speech model in the current Windows build
 - Unsigned internal Windows executable

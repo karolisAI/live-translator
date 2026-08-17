@@ -190,8 +190,7 @@ def add_tts_options(parser: argparse.ArgumentParser) -> None:
 
 def add_chunker_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--chunker", choices=CHUNKER_MODES, default=None, help="fixed windows or VAD speech segments")
-    parser.add_argument("--no-speech-threshold", type=float, default=None, help="Whisper no-speech rejection threshold")
-    parser.add_argument("--log-prob-threshold", type=float, default=None, help="Whisper average log-probability rejection threshold")
+    parser.add_argument("--log-prob-threshold", type=float, default=None, help="average per-token log-probability below which a phrase is rejected")
     parser.add_argument("--vad-threshold", type=float, default=None, help="RMS threshold for --chunker vad")
     parser.add_argument("--peak-threshold", type=float, default=None, help="minimum audio peak before ASR runs")
     parser.add_argument("--min-active-ratio", type=float, default=None, help="minimum ratio of active frames before ASR runs")
@@ -210,7 +209,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     checks = [
         ("numpy", "audio arrays", True),
         ("sounddevice", "audio capture/playback", True),
-        ("faster_whisper", "local ASR", True),
+        ("onnx_asr", "local ASR", True),
+        ("onnxruntime", "ASR runtime", True),
         ("ctranslate2", "bundled Argos model inference", True),
         ("sentencepiece", "bundled Argos tokenization", True),
         ("yaml", "YAML config", True),
@@ -492,7 +492,6 @@ def build_config(args: argparse.Namespace):
         tts_model_path=getattr(args, "tts_model", None),
         piper_exe=getattr(args, "piper_exe", None),
         tts_length_scale=getattr(args, "tts_length_scale", None),
-        no_speech_threshold=getattr(args, "no_speech_threshold", None),
         log_prob_threshold=getattr(args, "log_prob_threshold", None),
         chunker_mode=getattr(args, "chunker", None),
         vad_threshold=getattr(args, "vad_threshold", None),

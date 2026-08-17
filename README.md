@@ -1,11 +1,10 @@
 # Live Translator
 
 Live Translator is an offline, near-real-time Windows speech translator for
-English and German meetings. It uses faster-whisper for speech recognition,
-Argos CTranslate2 models for text translation, Piper for speech synthesis, and
-VB-CABLE to expose translated speech as a meeting microphone. NVIDIA Parakeet
-TDT is available as an optional alternative recognizer; see
-[Parakeet ASR](#parakeet-asr-optional).
+English and German meetings. It uses NVIDIA Parakeet TDT 0.6B v3 on onnxruntime
+for speech recognition, Argos CTranslate2 models for text translation, Piper for
+speech synthesis, and VB-CABLE to expose translated speech as a meeting
+microphone.
 
 No API key is required after the local models are prepared.
 
@@ -18,7 +17,7 @@ No API key is required after the local models are prepared.
 - Voice activity detection commits a phrase after a short pause.
 - ASR and translation models load, and Piper assets are validated, before the
   application reports `Ready`.
-- Low-energy noise and low-confidence Whisper output are not spoken.
+- Low-energy noise and low-confidence recognizer output are not spoken.
 - Bounded phrase queues prevent unlimited latency and report any overload.
 - Transient Windows output-start failures are retried on the verified WASAPI
   endpoint. A phrase that still cannot play is reported without closing the
@@ -28,7 +27,7 @@ This is phrase-level, one-direction translation per process. It is not
 simultaneous duplex interpretation or stabilized word-by-word captioning.
 
 ```text
-physical microphone -> continuous VAD capture -> faster-whisper -> Argos
+physical microphone -> continuous VAD capture -> Parakeet -> Argos
                                                         |
 meeting microphone <- CABLE Output <- CABLE Input <- Piper playback worker
 ```
@@ -56,7 +55,6 @@ Building from source additionally requires:
 - [Piper voices](https://huggingface.co/rhasspy/piper-voices)
 - Argos `en_de` and `de_en` packages
 - Inno Setup 6 when producing the Windows installer
-- `onnx-asr` and `onnxruntime` only when using the optional Parakeet ASR engine
 
 Model binaries, voices, and Piper are intentionally excluded from Git. The
 source checkout expects:
@@ -115,7 +113,7 @@ Both profiles default to automatic device selection. LiveTranslator follows
 the Windows default physical microphone and finds a matching VB-CABLE playback
 and recording pair without storing fragile device indices.
 
-Prepare the faster-whisper model once while the machine is online, then verify
+Download the speech model once while the machine is online, then verify
 translation and audio routing:
 
 ```powershell
@@ -181,51 +179,35 @@ files into `models\tts`:
 - [German Thorsten medium](https://huggingface.co/rhasspy/piper-voices/tree/main/de/de_DE/thorsten/medium)
 - [English hfc_male medium](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/hfc_male/medium)
 
-## Parakeet ASR (Optional)
+## Speech Recognition
 
-`faster-whisper` is the default recognizer. `parakeet` runs NVIDIA Parakeet TDT
-0.6B v3 and is faster on short phrases; see `research/benchmarks.md`. It
-requires the source checkout, not the Windows installer.
+Recognition runs NVIDIA Parakeet TDT 0.6B v3 through `onnx-asr` and
+`onnxruntime`, quantized to int8 on the CPU. Both directions use the same model;
+no per-language model swap is needed. On a 15 W mobile CPU it runs at roughly a
+fifth of real time in under 800 MB, so it keeps up with continuous speech
+without a GPU.
 
-The recognizer is a standalone MIT-licensed package in
-[packages/parakeet-live](packages/parakeet-live/) with no dependency on this
-application; `live_translator` only adapts it to its own ASR contract. Install
-it from the checkout, which pulls `onnx-asr` and `onnxruntime` with it:
-
-```powershell
-python -m pip install -e .\packages\parakeet-live
-```
-
-Run any command with `--asr-engine parakeet`. Accepted by `meeting`,
-`transcribe-once`, `translate-once`, `loopback`, and `record-test`. The engine's
-default model comes with it, so `--model` is not needed:
-
-```powershell
-$DEEN = "$env:LOCALAPPDATA\LiveTranslator\profiles\de-en.yaml"
-
-live-translator transcribe-once --config $DEEN --asr-engine parakeet --seconds 5
-live-translator meeting --profile de-en --asr-engine parakeet
-```
-
-The first run downloads the model into the Hugging Face cache and needs
-internet access. Later runs are offline.
-
-To make it permanent, edit the `asr` block of the profile at
-`%LOCALAPPDATA%\LiveTranslator\profiles\<name>.yaml`:
+New profiles already carry the right `asr` block:
 
 ```yaml
 asr:
   engine: parakeet
   model: nemo-parakeet-tdt-0.6b-v3
+  device: cpu
   compute_type: int8
+  cpu_threads: 8
+  source_language: en
 ```
 
-`doctor` takes the engine from the profile and has no `--asr-engine` flag, so
-make that edit before preparing the model:
+The first run downloads the model into the Hugging Face cache and needs internet
+access. `doctor --prepare-models` does that download ahead of time; later runs
+are offline.
 
-```powershell
-live-translator doctor --config $DEEN --prepare-models
-```
+The recognizer itself is in
+[src/live_translator/asr/recognizer.py](src/live_translator/asr/recognizer.py)
+and knows nothing about the rest of the application.
+[parakeet_engine.py](src/live_translator/asr/parakeet_engine.py) is the only
+place it meets this project's configuration.
 
 ## Profiles
 
@@ -323,30 +305,23 @@ the complete PyInstaller application folder; recipients do not also need the
 `dist\LiveTranslator` directory. Update `MyAppVersion` in
 `packaging\windows\LiveTranslator.iss` before producing a release build.
 
-The faster-whisper model remains in each Windows user's Hugging Face cache, so
-run `doctor --prepare-models` online once on every target machine before relying
-on offline operation.
+The speech model remains in each Windows user's Hugging Face cache, so run
+`doctor --prepare-models` online once on every target machine before relying on
+offline operation.
 
 ## Verification
 
 ```powershell
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -t tests -v
 python -m compileall -q src tests
 python -m pip check
 ```
 
-`packages/parakeet-live` has its own suite, run only when that optional package
-is installed:
-
-```powershell
-python -m unittest discover -s .\packages\parakeet-live\tests -t .\packages\parakeet-live\tests -v
-```
-
 The automated suite covers configuration, audio analysis, resampling,
-continuous segmentation, concurrent recognition/playback, overload behavior,
-worker failure propagation, and virtual-route tone detection. Hardware and
-model checks are performed with `doctor`, `route-test`, `say`, and the one-shot
-commands.
+continuous segmentation, recognizer decoding and confidence rejection,
+concurrent recognition/playback, overload behavior, worker failure propagation,
+and virtual-route tone detection. Hardware and model checks are performed with
+`doctor`, `route-test`, `say`, and the one-shot commands.
 
 Additional references:
 
@@ -355,5 +330,6 @@ Additional references:
 - `docs/03-windows-audio-routing.md`: Windows endpoint routing
 - `docs/04-meeting-test.md`: meeting validation checklist
 - `docs/05-windows-packaging.md`: executable build and installation
-- `research/benchmarks.md`: measured ASR latency, accuracy, and footprint
-- `research/stt-replacements.md`: ASR engine alternatives that were evaluated
+
+Benchmark write-ups and their audio live in `research/`, which is not tracked in
+Git.
