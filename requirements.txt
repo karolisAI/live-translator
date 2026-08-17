@@ -1,5 +1,6 @@
 av>=11,<19
 ctranslate2>=4,<5
+huggingface_hub>=1,<2
 numpy>=1.26,<3
 onnx-asr>=0.12,<1
 onnxruntime>=1.20,<2
