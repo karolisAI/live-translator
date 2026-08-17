@@ -238,6 +238,11 @@ overrides remain stable when Windows reorders device indices.
 `app.example.yaml` documents supported settings. It is a template, not a
 machine-ready meeting profile.
 
+Profiles written before the Parakeet switch will not load. They carry
+`engine: faster-whisper` and the `beam_size`, `condition_on_previous_text` and
+`no_speech_threshold` keys, which no longer exist. `doctor` names them and exits
+1. Run `setup` again to replace the profile, or edit the `asr` block by hand.
+
 ## Preflight
 
 Run before a demonstration or meeting:
@@ -283,6 +288,37 @@ mode adds audio gates, queue delay, timing, and saved input chunks:
 
 ```powershell
 live-translator meeting --profile en-de --verbose --debug-audio-dir debug-asr
+```
+
+## When Something Does Not Work
+
+Check dependencies without touching a profile:
+
+```powershell
+live-translator doctor
+```
+
+If a device fails to open, try each one and see which ones actually work. The
+output probe plays silence, so it is safe to run during a call:
+
+```powershell
+live-translator probe-input-devices
+live-translator probe-output-devices
+```
+
+Confirm the microphone is being captured at all, then listen back:
+
+```powershell
+live-translator record-test --seconds 5 --play
+```
+
+Test the two ends separately. `say` exercises Piper and playback with no
+microphone involved; `transcribe-once` exercises capture and recognition with no
+translation or speech involved:
+
+```powershell
+live-translator say --config $ENDE --text "Guten Morgen"
+live-translator transcribe-once --config $ENDE --seconds 5
 ```
 
 ## Build the Windows Installer
