@@ -1,9 +1,11 @@
 import unittest
 from dataclasses import dataclass
+from unittest.mock import patch
 
 import numpy as np
 
 from live_translator.asr.recognizer import ParakeetRecognizer, compression_ratio
+from live_translator.errors import UnsupportedModel
 
 
 @dataclass
@@ -702,6 +704,64 @@ class QuantizationTests(unittest.TestCase):
 
         self.assertEqual(_normalize_quantization("int8"), "int8")
         self.assertEqual(_normalize_quantization(" INT8 "), "int8")
+
+
+class SessionOptionsTests(unittest.TestCase):
+    """cpu_threads -> onnxruntime SessionOptions is the only piece of __init__
+    that runs without touching onnx_asr, so it's tested directly rather than
+    through a full (mocked) recognizer construction."""
+
+    def test_zero_or_negative_threads_leaves_options_unset(self) -> None:
+        from live_translator.asr.recognizer import _session_options
+
+        self.assertIsNone(_session_options(0))
+        self.assertIsNone(_session_options(-1))
+
+    def test_positive_threads_configures_intra_and_inter_op(self) -> None:
+        from live_translator.asr.recognizer import _session_options
+
+        options = _session_options(4)
+
+        self.assertEqual(options.intra_op_num_threads, 4)
+        self.assertEqual(options.inter_op_num_threads, 1)
+
+
+class ModelValidationTests(unittest.TestCase):
+    """__init__ translates onnx_asr's generic ValueError into UnsupportedModel
+    only when the message says so, and must not swallow any other failure
+    onnx_asr.load_model raises for an unrelated reason."""
+
+    def test_unsupported_model_name_raises_domain_error(self) -> None:
+        with patch(
+            "onnx_asr.load_model",
+            side_effect=ValueError("model 'whisper-base' is not supported"),
+        ):
+            with self.assertRaises(UnsupportedModel):
+                ParakeetRecognizer("whisper-base")
+
+    def test_unrelated_value_error_is_not_converted(self) -> None:
+        with patch(
+            "onnx_asr.load_model",
+            side_effect=ValueError("could not reach the model cache"),
+        ):
+            with self.assertRaisesRegex(ValueError, "could not reach the model cache"):
+                ParakeetRecognizer("nemo-parakeet-tdt-0.6b-v3")
+
+
+class RecoveryTransformFailureTests(unittest.TestCase):
+    """_recover must skip a pass whose transform can't process the audio,
+    not crash -- and give up cleanly if every pass fails that way."""
+
+    def test_recover_skips_passes_the_transforms_cannot_handle(self) -> None:
+        model = FlakyModel([FakeTimestampedResult("should not be reached", [-0.01])])
+        recognizer = build(FakeTimestampedResult("", [], None), model=model, recover_empty=True)
+
+        name, decoded = recognizer._recover(["not", "numeric", "data"], 16000, {})
+
+        self.assertIsNone(name)
+        self.assertEqual(decoded.text, "")
+        # Every pass's transform raised before the model could be called.
+        self.assertEqual(len(model.calls), 0)
 
 
 if __name__ == "__main__":

@@ -2,12 +2,14 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 
 from live_translator.asr import SUPPORTED_ASR_ENGINES, create_asr
 from live_translator.asr.parakeet_engine import ParakeetAsr
 from live_translator.config import AsrSettings, apply_cli_overrides, load_config
+from live_translator.errors import UnsupportedModel
 
 
 @dataclass
@@ -74,6 +76,43 @@ class ParakeetAdapterTests(unittest.TestCase):
     def test_rejects_wrong_engine_before_loading_the_model(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unsupported ASR engine"):
             ParakeetAsr(AsrSettings(engine="whisper.cpp"))
+
+    def test_constructs_recognizer_from_settings(self) -> None:
+        """The other tests here bypass __init__ via build_adapter(), so nothing
+        else verifies that AsrSettings actually reaches ParakeetRecognizer."""
+        settings = AsrSettings(
+            engine="parakeet",
+            model="nemo-parakeet-tdt-0.6b-v3",
+            compute_type="int8",
+            device="cpu",
+            cpu_threads=8,
+            source_language="de",
+            min_segment_chars=2,
+            log_prob_threshold=-1.3,
+            compression_ratio_threshold=2.4,
+        )
+
+        with patch("live_translator.asr.parakeet_engine.ParakeetRecognizer") as fake_cls:
+            ParakeetAsr(settings)
+
+        fake_cls.assert_called_once_with(
+            "nemo-parakeet-tdt-0.6b-v3",
+            quantization="int8",
+            device="cpu",
+            cpu_threads=8,
+            language="de",
+            min_chars=2,
+            log_prob_threshold=-1.3,
+            compression_ratio_threshold=2.4,
+        )
+
+    def test_translates_unsupported_model_into_a_config_facing_error(self) -> None:
+        with patch(
+            "live_translator.asr.parakeet_engine.ParakeetRecognizer",
+            side_effect=UnsupportedModel("'base' is not a Parakeet model"),
+        ):
+            with self.assertRaisesRegex(ValueError, r"asr\.model 'base' is not a Parakeet model"):
+                ParakeetAsr(AsrSettings(engine="parakeet", model="base"))
 
 
 class SilenceGateTests(unittest.TestCase):
