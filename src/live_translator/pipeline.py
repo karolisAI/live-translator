@@ -33,7 +33,9 @@ class LocalTranslatorPipeline:
         self._get_translator().prepare()
         if include_tts:
             print(f"  Speech output: {self._config.tts.engine}")
-            self._get_speaker().validate()
+            speaker = self._get_speaker()
+            speaker.validate()
+            speaker.warm_up()
         print(f"Ready in {perf_counter() - started:.1f}s.")
 
     def record_test(self, output_path: str | Path, seconds: float | None = None, play: bool = False) -> None:
