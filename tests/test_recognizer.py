@@ -75,6 +75,7 @@ def build(result: FakeTimestampedResult, model=None, **overrides) -> ParakeetRec
     recognizer.language = overrides.get("language")
     recognizer.min_chars = overrides.get("min_chars", 2)
     recognizer.log_prob_threshold = overrides.get("log_prob_threshold", -1.3)
+    recognizer.flag_log_prob_threshold = overrides.get("flag_log_prob_threshold", None)
     recognizer.compression_ratio_threshold = overrides.get("compression_ratio_threshold", 2.4)
     # Off unless a test asks for it, so the retry passes cannot quietly change
     # what the other tests are asserting about a single recognize() call.
@@ -205,6 +206,61 @@ class RejectionTests(unittest.TestCase):
 
     def test_compression_ratio_flags_repetition(self) -> None:
         self.assertGreater(compression_ratio("ja " * 400), compression_ratio("ein normaler Satz"))
+
+
+class LowConfidenceFlagTests(unittest.TestCase):
+    """flag_log_prob_threshold marks an accepted transcript rather than
+    rejecting it -- an opt-in signal for a caller that wants to warn on
+    uncertain output instead of discarding it before translation."""
+
+    def test_disabled_by_default(self) -> None:
+        # No flag_log_prob_threshold passed to build() -> None, the default.
+        recognizer = build(FakeTimestampedResult("unsicherer Satz", [-0.5]))
+
+        transcript = recognizer.transcribe(np.zeros(16000, dtype=np.float32), 16000)
+
+        self.assertFalse(transcript.rejected)
+        self.assertFalse(transcript.low_confidence)
+        self.assertEqual(transcript.avg_logprob, -0.5)
+
+    def test_flags_accepted_text_below_the_flag_threshold(self) -> None:
+        recognizer = build(
+            FakeTimestampedResult("unsicherer Satz", [-0.5]),
+            log_prob_threshold=-1.3,
+            flag_log_prob_threshold=-0.3,
+        )
+
+        transcript = recognizer.transcribe(np.zeros(16000, dtype=np.float32), 16000)
+
+        self.assertFalse(transcript.rejected)
+        self.assertEqual(transcript.text, "unsicherer Satz")
+        self.assertTrue(transcript.low_confidence)
+        self.assertEqual(transcript.avg_logprob, -0.5)
+
+    def test_does_not_flag_confident_text(self) -> None:
+        recognizer = build(
+            FakeTimestampedResult("klarer Satz", [-0.01]),
+            flag_log_prob_threshold=-0.3,
+        )
+
+        transcript = recognizer.transcribe(np.zeros(16000, dtype=np.float32), 16000)
+
+        self.assertFalse(transcript.low_confidence)
+
+    def test_rejected_text_is_never_also_flagged(self) -> None:
+        # Below both thresholds: log_prob_threshold rejects first, so
+        # low_confidence should never fire on top of an already-rejected
+        # (empty-text) result.
+        recognizer = build(
+            FakeTimestampedResult("murmeln", [-2.0]),
+            log_prob_threshold=-1.3,
+            flag_log_prob_threshold=-0.3,
+        )
+
+        transcript = recognizer.transcribe(np.zeros(16000, dtype=np.float32), 16000)
+
+        self.assertTrue(transcript.rejected)
+        self.assertFalse(transcript.low_confidence)
 
 
 class RecoveryTests(unittest.TestCase):
@@ -706,6 +762,28 @@ class QuantizationTests(unittest.TestCase):
         self.assertEqual(_normalize_quantization(" INT8 "), "int8")
 
 
+class ConcatLogprobsTests(unittest.TestCase):
+    """A fragment appended without scores still contributes text, so the
+    combined confidence must not claim data it doesn't have (PR #2 review:
+    the old asymmetric version silently kept `first`'s scores when only
+    `second` was missing, understating how much of the text was scored)."""
+
+    def test_both_present_concatenates(self) -> None:
+        from live_translator.asr.recognizer import _concat_logprobs
+
+        self.assertEqual(_concat_logprobs([-0.1, -0.2], [-0.3]), [-0.1, -0.2, -0.3])
+
+    def test_first_missing_returns_none(self) -> None:
+        from live_translator.asr.recognizer import _concat_logprobs
+
+        self.assertIsNone(_concat_logprobs(None, [-0.1, -0.2]))
+
+    def test_second_missing_returns_none(self) -> None:
+        from live_translator.asr.recognizer import _concat_logprobs
+
+        self.assertIsNone(_concat_logprobs([-0.1, -0.2], None))
+
+
 class SessionOptionsTests(unittest.TestCase):
     """cpu_threads -> onnxruntime SessionOptions is the only piece of __init__
     that runs without touching onnx_asr, so it's tested directly rather than
@@ -746,6 +824,70 @@ class ModelValidationTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "could not reach the model cache"):
                 ParakeetRecognizer("nemo-parakeet-tdt-0.6b-v3")
+
+
+class DeviceValidationTests(unittest.TestCase):
+    """A typo like device='cdua' used to fall through _PROVIDERS.get(...) to
+    None, silently handing onnxruntime its own default provider instead of
+    surfacing a config error (PR #2 review)."""
+
+    def test_unknown_device_raises_before_touching_onnx_asr(self) -> None:
+        with patch("onnx_asr.load_model") as fake_load_model:
+            with self.assertRaisesRegex(ValueError, "asr.device 'cdua' is not supported"):
+                ParakeetRecognizer("nemo-parakeet-tdt-0.6b-v3", device="cdua")
+            fake_load_model.assert_not_called()
+
+    def test_known_devices_still_pass_through(self) -> None:
+        for device in ("cpu", "CUDA", " cpu "):
+            with self.subTest(device=device):
+                with patch("onnx_asr.load_model") as fake_load_model:
+                    fake_load_model.return_value.with_timestamps.return_value = object()
+                    ParakeetRecognizer("nemo-parakeet-tdt-0.6b-v3", device=device)
+                    fake_load_model.assert_called_once()
+
+
+class AsSamplesTests(unittest.TestCase):
+    """Multi-channel audio must not silently flatten into a 1-D array whose
+    sample count no longer matches sample_rate (PR #2 review, line 190)."""
+
+    def test_mono_1d_flattens_unchanged(self) -> None:
+        from live_translator.asr.recognizer import _as_samples
+
+        result = _as_samples(np.zeros(1600, dtype=np.float32))
+
+        self.assertEqual(result.shape, (1600,))
+
+    def test_mono_with_trailing_singleton_axis_still_flattens(self) -> None:
+        from live_translator.asr.recognizer import _as_samples
+
+        result = _as_samples(np.zeros((1600, 1), dtype=np.float32))
+
+        self.assertEqual(result.shape, (1600,))
+
+    def test_stereo_is_rejected_rather_than_flattened(self) -> None:
+        from live_translator.asr.recognizer import _as_samples
+
+        result = _as_samples(np.zeros((1600, 2), dtype=np.float32))
+
+        self.assertIsNone(result)
+
+    def test_stereo_input_skips_gap_recovery_instead_of_corrupting_it(self) -> None:
+        """End-to-end: a real, sizeable gap (2s left uncovered of a 3s clip,
+        well past min_gap_seconds) would normally trigger a tail-covering
+        decode. On stereo input that decode must not fire at all -- not run
+        against a flattened, wrongly-timed array."""
+        model = FlakyModel(
+            [FakeTimestampedResult("opening only", [-0.01], [0.2, 1.0])]
+        )
+        recognizer = build(model._results[0], model=model, recover_gaps=True, min_gap_seconds=0.5)
+
+        # (48000, 2) stereo at 16000 Hz -> duration_seconds = 3.0s, but decoded
+        # only reaches 1.0s: a 2.0s gap that mono input of the same duration
+        # would trigger _cover_tail on.
+        transcript = recognizer.transcribe(np.zeros((48000, 2), dtype=np.float32), 16000)
+
+        self.assertEqual(transcript.text, "opening only")
+        self.assertEqual(len(model.calls), 1)  # no extra gap-covering decode
 
 
 class RecoveryTransformFailureTests(unittest.TestCase):

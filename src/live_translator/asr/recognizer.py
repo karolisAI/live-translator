@@ -40,6 +40,20 @@ class Transcript:
     Seconds of it on continuous speech is the truncation this class works to
     prevent, and leaving it visible lets a caller measure that for itself.
     """
+    avg_logprob: float | None = None
+    """Mean per-token logprob, whether or not the text was accepted.
+
+    log_prob_threshold only rejects far below this model's real confidence
+    range (see class docstring); this is the raw signal for a caller that
+    wants to flag an accepted-but-uncertain segment rather than reject it.
+    """
+    low_confidence: bool = False
+    """True when accepted but avg_logprob fell below flag_log_prob_threshold.
+
+    Never true alongside rejected=True -- a rejected segment has no text to
+    flag. Always false when flag_log_prob_threshold is unset (the default):
+    this is an opt-in signal, not a second rejection gate.
+    """
 
 
 @dataclass(frozen=True)
@@ -130,6 +144,7 @@ class ParakeetRecognizer:
         language: str | None = None,
         min_chars: int = 2,
         log_prob_threshold: float = -1.3,
+        flag_log_prob_threshold: float | None = None,
         compression_ratio_threshold: float = 2.4,
         recover_empty: bool = True,
         min_recovery_seconds: float = 3.0,
@@ -148,6 +163,7 @@ class ParakeetRecognizer:
         self.language = language
         self.min_chars = min_chars
         self.log_prob_threshold = log_prob_threshold
+        self.flag_log_prob_threshold = flag_log_prob_threshold
         self.compression_ratio_threshold = compression_ratio_threshold
         self.recover_empty = recover_empty
         self.min_recovery_seconds = min_recovery_seconds
@@ -155,12 +171,19 @@ class ParakeetRecognizer:
         self.min_gap_seconds = min_gap_seconds
         self.max_gap_passes = max_gap_passes
 
+        device_key = device.strip().lower()
+        if device_key not in _PROVIDERS:
+            raise ValueError(
+                f"asr.device '{device}' is not supported. Use one of: "
+                f"{', '.join(sorted(_PROVIDERS))}."
+            )
+
         try:
             loaded = onnx_asr.load_model(
                 model,
                 quantization=_normalize_quantization(quantization),
                 sess_options=_session_options(cpu_threads),
-                providers=_PROVIDERS.get(device.strip().lower()),
+                providers=_PROVIDERS[device_key],
             )
         except ValueError as exc:
             if "not supported" not in str(exc):
@@ -207,7 +230,7 @@ class ParakeetRecognizer:
         text, logprobs, covered = decoded.text, decoded.logprobs, decoded.last
         inference_seconds = perf_counter() - start
 
-        reason = self._rejection_reason(text, logprobs, samples)
+        reason, avg_logprob = self._rejection_reason(text, logprobs, samples)
         if reason:
             return Transcript(
                 text="",
@@ -218,6 +241,11 @@ class ParakeetRecognizer:
                 rejection_reason=reason,
             )
 
+        low_confidence = (
+            self.flag_log_prob_threshold is not None
+            and avg_logprob is not None
+            and avg_logprob < self.flag_log_prob_threshold
+        )
         return Transcript(
             text=text,
             language=spoken,
@@ -225,6 +253,8 @@ class ParakeetRecognizer:
             inference_seconds=inference_seconds,
             recovered_by="+".join(passes) if passes else None,
             covered_seconds=0.0 if covered is None else covered,
+            avg_logprob=avg_logprob,
+            low_confidence=low_confidence,
         )
 
     def _decode(self, audio: Any, sample_rate: int, options: dict[str, Any]) -> _Decoded:
@@ -414,7 +444,13 @@ class ParakeetRecognizer:
 
         return _Decoded(text, logprobs, decoded.first, covered), used
 
-    def _rejection_reason(self, text: str, logprobs: Any, samples: Any = None) -> str | None:
+    def _rejection_reason(
+        self, text: str, logprobs: Any, samples: Any = None
+    ) -> tuple[str | None, float | None]:
+        """Returns (reason, avg_logprob). avg_logprob is None whenever there's
+        no text or no logprobs to average, on both the rejected and accepted
+        paths -- the caller (transcribe()) uses it for the separate, opt-in
+        low_confidence flag on segments that don't hit a rejection reason."""
         if not text:
             # Empty output has two very different causes, and a caller that
             # cannot tell them apart cannot respond to either. Quiet audio that
@@ -427,22 +463,21 @@ class ParakeetRecognizer:
             # failed decode. The distinction is still worth drawing: it is the
             # difference between "nothing was said" and "something was lost".
             if samples is not None and _rms(samples) >= _ACTIVE_AUDIO_RMS:
-                return "decode_failed"
-            return "no_speech"
+                return "decode_failed", None
+            return "no_speech", None
         if len(text) < self.min_chars:
-            return "short"
+            return "short", None
 
         scores = [float(value) for value in logprobs] if logprobs is not None else []
-        if scores:
-            avg_logprob = sum(scores) / len(scores)
-            if avg_logprob < self.log_prob_threshold:
-                return f"avg_logprob={avg_logprob:.2f}"
+        avg_logprob = sum(scores) / len(scores) if scores else None
+        if avg_logprob is not None and avg_logprob < self.log_prob_threshold:
+            return f"avg_logprob={avg_logprob:.2f}", avg_logprob
 
         ratio = compression_ratio(text)
         if ratio > self.compression_ratio_threshold:
-            return f"compression_ratio={ratio:.2f}"
+            return f"compression_ratio={ratio:.2f}", avg_logprob
 
-        return None
+        return None, avg_logprob
 
 
 # How far back before the last token a tail decode starts. Enough to give the
@@ -482,15 +517,25 @@ _SEAM_WORDS = 4
 
 
 def _as_samples(audio: Any) -> Any:
-    """float32 view of the audio, or None if it is not array-like.
+    """float32 mono view of the audio, or None if it can't be used for
+    sample-rate-based slicing.
 
-    Slicing a tail requires real samples. Callers passing something exotic keep
-    the plain single-call behaviour rather than getting an error.
+    _cover_lead/_cover_tail assume one array element is 1/sample_rate
+    seconds. A multi-channel array (e.g. stereo shape (n, 2)) doesn't satisfy
+    that -- flattening it would silently double the apparent sample count per
+    second and slice into the wrong point in the audio. Treated the same as
+    any other audio gap-recovery can't handle: skip the recovery pass (see
+    transcribe()'s `samples is not None` check) rather than compute against
+    the wrong timeline. A trailing size-1 axis (shape (n, 1)) still flattens
+    normally -- it's mono, just not already 1-D.
     """
     try:
         import numpy as np
 
-        return np.asarray(audio, dtype=np.float32).reshape(-1)
+        array = np.asarray(audio, dtype=np.float32)
+        if array.ndim > 1 and array.shape[-1] > 1:
+            return None
+        return array.reshape(-1)
     except (TypeError, ValueError):
         return None
 
@@ -553,8 +598,16 @@ def _confident_enough(logprobs: Any) -> bool:
 
 
 def _concat_logprobs(first: Any, second: Any) -> Any:
+    """None whenever either side lacks scores.
+
+    A fragment appended without logprobs (e.g. from a model that doesn't
+    report them) still contributes text to the final transcript, so the
+    combined result must not claim complete confidence data it doesn't have.
+    Silently keeping the scored side (as this used to when only `second` was
+    missing) would understate how much of the text was actually scored.
+    """
     if first is None or second is None:
-        return first
+        return None
     return [*first, *second]
 
 
