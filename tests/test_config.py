@@ -161,6 +161,7 @@ class ConfigTests(unittest.TestCase):
                     [
                         "asr:",
                         "  log_prob_threshold: -0.8",
+                        "  flag_log_prob_threshold: -0.05",
                         "  compression_ratio_threshold: 2.2",
                         "  min_segment_chars: 3",
                     ]
@@ -171,13 +172,35 @@ class ConfigTests(unittest.TestCase):
             config = load_config(config_path)
 
         self.assertEqual(config.asr.log_prob_threshold, -0.8)
+        self.assertEqual(config.asr.flag_log_prob_threshold, -0.05)
         self.assertEqual(config.asr.compression_ratio_threshold, 2.2)
         self.assertEqual(config.asr.min_segment_chars, 3)
+
+    def test_flag_log_prob_threshold_defaults_to_disabled(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "app.yaml"
+            config_path.write_text("asr:\n  log_prob_threshold: -0.8\n", encoding="utf-8")
+
+            config = load_config(config_path)
+
+        self.assertIsNone(config.asr.flag_log_prob_threshold)
+
+    def test_rejects_flag_threshold_at_or_below_reject_threshold(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "app.yaml"
+            config_path.write_text(
+                "asr:\n  log_prob_threshold: -0.3\n  flag_log_prob_threshold: -0.3\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "flag_log_prob_threshold"):
+                load_config(config_path)
 
     def test_cli_overrides_chunking_settings(self) -> None:
         config = apply_cli_overrides(
             AppConfig(),
             log_prob_threshold=-1.7,
+            flag_log_prob_threshold=-0.1,
             chunker_mode="vad",
             vad_threshold=0.02,
             peak_threshold=0.04,
@@ -189,6 +212,7 @@ class ConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(config.asr.log_prob_threshold, -1.7)
+        self.assertEqual(config.asr.flag_log_prob_threshold, -0.1)
         self.assertEqual(config.chunking.mode, "vad")
         self.assertEqual(config.chunking.rms_threshold, 0.02)
         self.assertEqual(config.chunking.peak_threshold, 0.04)

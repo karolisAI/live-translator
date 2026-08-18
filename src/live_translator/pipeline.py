@@ -211,7 +211,7 @@ class LocalTranslatorPipeline:
         translated = translator.translate(transcript.text)
         self._write_debug_note(debug_wav, transcript.text, translated)
         self._print_asr_rejections(transcript)
-        self._print_translation(transcript.text, translated)
+        self._print_translation(transcript.text, translated, transcript.low_confidence)
         if self._verbose:
             queue_seconds = max(0.0, started - segment.captured_at)
             print(
@@ -277,11 +277,18 @@ class LocalTranslatorPipeline:
             )
         return False
 
-    def _print_translation(self, source_text: str, target_text: str) -> None:
+    def _print_translation(
+        self, source_text: str, target_text: str, low_confidence: bool = False
+    ) -> None:
         source = self._config.translation.source_language.upper()
         target = self._config.translation.target_language.upper()
+        # A flagged segment is not rejected -- it's still translated and shown
+        # in full, just marked as one the recognizer itself was uncertain
+        # about, favoring a visible-but-quiet marker over silently dropping
+        # possibly-correct content. See asr.flag_log_prob_threshold.
+        marker = " [low confidence]" if low_confidence else ""
         print()
-        print(f"{source}: {source_text}")
+        print(f"{source}{marker}: {source_text}")
         print(f"{target}: {target_text}")
 
     def _print_asr_rejections(self, result: TranscriptResult) -> None:

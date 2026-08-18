@@ -25,6 +25,7 @@ class FakeTranscript:
     inference_seconds: float = 0.1
     rejected: bool = False
     rejection_reason: str | None = None
+    low_confidence: bool = False
 
 
 class FakeRecognizer:
@@ -73,6 +74,15 @@ class ParakeetAdapterTests(unittest.TestCase):
         self.assertEqual(result.rejected_segments, 1)
         self.assertEqual(result.rejection_reasons, ("no_speech",))
 
+    def test_maps_low_confidence_flag(self) -> None:
+        engine = build_adapter(FakeTranscript("unsicherer Satz", low_confidence=True))
+
+        result = engine.transcribe(np.zeros(16000, dtype=np.float32), 16000)
+
+        self.assertEqual(result.text, "unsicherer Satz")
+        self.assertEqual(result.rejected_segments, 0)
+        self.assertTrue(result.low_confidence)
+
     def test_rejects_wrong_engine_before_loading_the_model(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unsupported ASR engine"):
             ParakeetAsr(AsrSettings(engine="whisper.cpp"))
@@ -89,6 +99,7 @@ class ParakeetAdapterTests(unittest.TestCase):
             source_language="de",
             min_segment_chars=2,
             log_prob_threshold=-1.3,
+            flag_log_prob_threshold=-0.05,
             compression_ratio_threshold=2.4,
         )
 
@@ -103,6 +114,7 @@ class ParakeetAdapterTests(unittest.TestCase):
             language="de",
             min_chars=2,
             log_prob_threshold=-1.3,
+            flag_log_prob_threshold=-0.05,
             compression_ratio_threshold=2.4,
         )
 
@@ -177,6 +189,29 @@ class ParakeetConfigTests(unittest.TestCase):
 
             self.assertEqual(config.asr.engine, "parakeet")
             self.assertEqual(config.asr.compute_type, "int8")
+
+    def test_log_prob_threshold_is_independent_per_profile(self) -> None:
+        """log_prob_threshold is meant to be tuned per direction profile
+        (en-de.yaml vs de-en.yaml), not shared globally -- confidence/WER
+        correlation measured differently by source_language. Two separate
+        config files must not leak a value into each other."""
+        with TemporaryDirectory() as temp_dir:
+            en_de_path = Path(temp_dir) / "en-de.yaml"
+            en_de_path.write_text(
+                "asr:\n  engine: parakeet\n  source_language: en\n  log_prob_threshold: -0.07\n",
+                encoding="utf-8",
+            )
+            de_en_path = Path(temp_dir) / "de-en.yaml"
+            de_en_path.write_text(
+                "asr:\n  engine: parakeet\n  source_language: de\n  log_prob_threshold: -0.03\n",
+                encoding="utf-8",
+            )
+
+            en_de = load_config(en_de_path)
+            de_en = load_config(de_en_path)
+
+            self.assertEqual(en_de.asr.log_prob_threshold, -0.07)
+            self.assertEqual(de_en.asr.log_prob_threshold, -0.03)
 
     def test_config_still_rejects_unknown_engine(self) -> None:
         with TemporaryDirectory() as temp_dir:

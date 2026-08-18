@@ -191,6 +191,7 @@ def add_tts_options(parser: argparse.ArgumentParser) -> None:
 def add_chunker_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--chunker", choices=CHUNKER_MODES, default=None, help="fixed windows or VAD speech segments")
     parser.add_argument("--log-prob-threshold", type=float, default=None, help="average per-token log-probability below which a phrase is rejected")
+    parser.add_argument("--flag-log-prob-threshold", type=float, default=None, help="average per-token log-probability below which an accepted phrase is flagged low_confidence instead of rejected; must be greater than --log-prob-threshold")
     parser.add_argument("--vad-threshold", type=float, default=None, help="RMS threshold for --chunker vad")
     parser.add_argument("--peak-threshold", type=float, default=None, help="minimum audio peak before ASR runs")
     parser.add_argument("--min-active-ratio", type=float, default=None, help="minimum ratio of active frames before ASR runs")
@@ -493,6 +494,7 @@ def build_config(args: argparse.Namespace):
         piper_exe=getattr(args, "piper_exe", None),
         tts_length_scale=getattr(args, "tts_length_scale", None),
         log_prob_threshold=getattr(args, "log_prob_threshold", None),
+        flag_log_prob_threshold=getattr(args, "flag_log_prob_threshold", None),
         chunker_mode=getattr(args, "chunker", None),
         vad_threshold=getattr(args, "vad_threshold", None),
         peak_threshold=getattr(args, "peak_threshold", None),

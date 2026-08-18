@@ -31,6 +31,7 @@ class ParakeetAsr:
                 language=settings.source_language,
                 min_chars=settings.min_segment_chars,
                 log_prob_threshold=settings.log_prob_threshold,
+                flag_log_prob_threshold=settings.flag_log_prob_threshold,
                 compression_ratio_threshold=settings.compression_ratio_threshold,
             )
         except UnsupportedModel as exc:
@@ -52,4 +53,5 @@ class ParakeetAsr:
             rejection_reasons=(
                 (transcript.rejection_reason,) if transcript.rejection_reason else ()
             ),
+            low_confidence=transcript.low_confidence,
         )

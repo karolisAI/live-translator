@@ -12,6 +12,7 @@ class TranscriptResult:
     inference_seconds: float
     rejected_segments: int = 0
     rejection_reasons: tuple[str, ...] = ()
+    low_confidence: bool = False
 
 
 class AsrEngine(Protocol):

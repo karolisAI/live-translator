@@ -32,6 +32,7 @@ class AsrSettings:
     cpu_threads: int = 0
     source_language: str | None = "en"
     log_prob_threshold: float = -1.3
+    flag_log_prob_threshold: float | None = None
     compression_ratio_threshold: float = 2.4
     min_segment_chars: int = 2
 
@@ -104,6 +105,7 @@ _SECTION_KEYS: dict[str, set[str]] = {
         "cpu_threads",
         "source_language",
         "log_prob_threshold",
+        "flag_log_prob_threshold",
         "compression_ratio_threshold",
         "min_segment_chars",
     },
@@ -178,6 +180,7 @@ def apply_cli_overrides(
     piper_exe: str | None = None,
     tts_length_scale: float | None = None,
     log_prob_threshold: float | None = None,
+    flag_log_prob_threshold: float | None = None,
     chunker_mode: str | None = None,
     vad_threshold: float | None = None,
     peak_threshold: float | None = None,
@@ -224,6 +227,8 @@ def apply_cli_overrides(
         tts = replace(tts, length_scale=tts_length_scale)
     if log_prob_threshold is not None:
         asr = replace(asr, log_prob_threshold=log_prob_threshold)
+    if flag_log_prob_threshold is not None:
+        asr = replace(asr, flag_log_prob_threshold=flag_log_prob_threshold)
     if chunker_mode is not None:
         chunking = replace(chunking, mode=chunker_mode)
     if vad_threshold is not None:
@@ -270,6 +275,14 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("asr.cpu_threads must not be negative")
     if config.asr.compression_ratio_threshold <= 0.0:
         raise ValueError("asr.compression_ratio_threshold must be positive")
+    if (
+        config.asr.flag_log_prob_threshold is not None
+        and config.asr.flag_log_prob_threshold <= config.asr.log_prob_threshold
+    ):
+        raise ValueError(
+            "asr.flag_log_prob_threshold must be greater than asr.log_prob_threshold "
+            "(otherwise everything it would flag is already rejected first)"
+        )
     if config.asr.min_segment_chars <= 0:
         raise ValueError("asr.min_segment_chars must be positive")
 
@@ -374,6 +387,7 @@ def _load_asr(raw: dict[str, Any]) -> AsrSettings:
         cpu_threads=_nonnegative_int(raw, "cpu_threads", 0),
         source_language=_str_or_none(raw, "source_language", "en"),
         log_prob_threshold=_float_any(raw, "log_prob_threshold", -1.3),
+        flag_log_prob_threshold=_float_or_none(raw, "flag_log_prob_threshold"),
         compression_ratio_threshold=_float(raw, "compression_ratio_threshold", 2.4),
         min_segment_chars=_int(raw, "min_segment_chars", 2),
     )

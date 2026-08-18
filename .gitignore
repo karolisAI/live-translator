@@ -13,6 +13,7 @@ logs/
 # Benchmarks, evaluation audio, and reference transcripts. Large binaries, and
 # the transcripts are third-party material -- keep them local.
 research/
+eval/calibration/
 *.mp3
 *.pdf
 debug-asr/
