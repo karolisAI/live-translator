@@ -1,3 +1,3 @@
-from .speaker import TtsSpeaker
+from .speaker import RenderedSpeech, TtsSpeaker
 
-__all__ = ["TtsSpeaker"]
+__all__ = ["RenderedSpeech", "TtsSpeaker"]

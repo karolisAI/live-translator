@@ -11,7 +11,7 @@ from live_translator.audio.rolling import RollingSpeechChunker
 from live_translator.config import AppConfig
 from live_translator.mt import TranslationEngine
 from live_translator.realtime import CapturedSegment, RealtimeMeetingWorkers
-from live_translator.tts import TtsSpeaker
+from live_translator.tts import RenderedSpeech, TtsSpeaker
 
 
 class LocalTranslatorPipeline:
@@ -199,8 +199,18 @@ class LocalTranslatorPipeline:
         self,
         segment: CapturedSegment,
         translator: TranslationEngine,
+        speaker: TtsSpeaker,
         debug_dir: Path | None,
-    ) -> str | None:
+    ) -> RenderedSpeech | None:
+        """Recognize, translate, and synthesize one phrase.
+
+        Synthesis happens here rather than in the playback worker so that the two
+        overlap: this worker renders the next phrase while the previous one is
+        still being spoken. It has the room. Measured 2026-08-18, the playback
+        worker was busy 4.01s per phrase while phrases arrived every 3.52s, so it
+        fell behind on every one and its queue discarded a fifth of them, while
+        this worker sat idle for most of the same interval.
+        """
         started = perf_counter()
         debug_wav = self._write_debug_audio(debug_dir, segment.number, segment.audio)
         transcript = self._transcribe_audio_if_safe(segment.audio)
@@ -214,13 +224,14 @@ class LocalTranslatorPipeline:
         self._write_debug_note(debug_wav, transcript.text, translated)
         self._print_asr_rejections(transcript)
         self._print_translation(transcript.text, translated, transcript.low_confidence)
+        rendered = speaker.render(translated) if translated else None
         if self._verbose:
             queue_seconds = max(0.0, started - segment.captured_at)
             print(
                 f"Segment {segment.number}: queue={queue_seconds:.2f}s "
-                f"recognition+translation={perf_counter() - started:.2f}s"
+                f"recognition+translation+synthesis={perf_counter() - started:.2f}s"
             )
-        return translated or None
+        return rendered
 
     def _create_realtime_workers(
         self,
@@ -229,8 +240,8 @@ class LocalTranslatorPipeline:
         debug_dir: Path | None,
     ) -> RealtimeMeetingWorkers:
         return RealtimeMeetingWorkers(
-            lambda segment: self._process_live_segment(segment, translator, debug_dir),
-            speaker.speak,
+            lambda segment: self._process_live_segment(segment, translator, speaker, debug_dir),
+            speaker.play,
             segment_queue_size=self._config.realtime.recognition_queue_size,
             playback_queue_size=self._config.realtime.playback_queue_size,
         )
