@@ -74,7 +74,7 @@ class RealtimeMeetingWorkersTests(unittest.TestCase):
             workers.stop()
 
         self.assertEqual(len(warnings), 1)
-        self.assertIn("skipped the oldest queued phrase", warnings[0])
+        self.assertIn("oldest queued phrase skipped", warnings[0])
 
     def test_slow_playback_does_not_block_recognition(self) -> None:
         playback_started = Event()
@@ -143,7 +143,7 @@ class RealtimeMeetingWorkersTests(unittest.TestCase):
             workers.stop()
 
         self.assertEqual(len(warnings), 1)
-        self.assertIn("skipped the oldest queued translation", warnings[0])
+        self.assertIn("oldest queued translation skipped", warnings[0])
 
     def test_worker_failure_stops_capture_and_is_propagated(self) -> None:
         def process(_segment: CapturedSegment) -> str:
@@ -183,7 +183,7 @@ class RealtimeMeetingWorkersTests(unittest.TestCase):
         finally:
             workers.stop()
 
-        self.assertIn("Continuous listening remains active", warnings[0])
+        self.assertIn("Listening remains active", warnings[0])
 
 
 if __name__ == "__main__":

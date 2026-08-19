@@ -53,9 +53,10 @@ class PipelineTests(unittest.TestCase):
             text="source", language="en", duration_seconds=1.0, inference_seconds=0.1
         )
         with patch.object(pipeline, "_transcribe_audio_if_safe", return_value=transcript):
-            result = pipeline._process_live_segment(
-                FakeSegment(), FakeTranslator(), speaker, None
-            )
+            with redirect_stdout(io.StringIO()):
+                result = pipeline._process_live_segment(
+                    FakeSegment(), FakeTranslator(), speaker, None
+                )
 
         self.assertEqual(speaker.rendered, ["target: source"])
         self.assertIsInstance(result, RenderedSpeech)
@@ -76,6 +77,66 @@ class PipelineTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(speaker.rendered, [])
+
+
+class NormalModeOutputTests(unittest.TestCase):
+    """A normal meeting must not print what was said. Diagnostics privacy: the
+    console is the one place meeting content leaked without anyone opting in,
+    and terminal scrollback keeps it for the rest of the session."""
+
+    def _run_segment(self, *, verbose: bool, low_confidence: bool = False) -> str:
+        pipeline = LocalTranslatorPipeline(AppConfig())
+        pipeline._verbose = verbose
+
+        class FakeTranslator:
+            def translate(self, text: str) -> str:
+                return "geheime Übersetzung"
+
+        class FakeSegment:
+            number = 7
+            audio = [0.0] * 16000
+            captured_at = 0.0
+
+        transcript = TranscriptResult(
+            text="confidential source",
+            language="en",
+            duration_seconds=1.0,
+            inference_seconds=0.1,
+            low_confidence=low_confidence,
+        )
+        buffer = io.StringIO()
+        with patch.object(pipeline, "_transcribe_audio_if_safe", return_value=transcript):
+            with redirect_stdout(buffer):
+                pipeline._process_live_segment(
+                    FakeSegment(), FakeTranslator(), FakeSpeaker(), None
+                )
+        return buffer.getvalue()
+
+    def test_normal_mode_prints_neither_source_nor_target(self) -> None:
+        output = self._run_segment(verbose=False)
+
+        self.assertNotIn("confidential source", output)
+        self.assertNotIn("geheime Übersetzung", output)
+
+    def test_normal_mode_still_confirms_the_phrase_was_handled(self) -> None:
+        """Without this the user has no signal at all: translated speech goes to
+        the virtual cable, not to their own headphones."""
+        output = self._run_segment(verbose=False)
+
+        self.assertIn("Phrase", output)
+        self.assertIn("7", output)
+
+    def test_low_confidence_is_marked_without_showing_the_text(self) -> None:
+        output = self._run_segment(verbose=False, low_confidence=True)
+
+        self.assertIn("low confidence", output)
+        self.assertNotIn("confidential source", output)
+
+    def test_verbose_still_shows_source_and_target(self) -> None:
+        output = self._run_segment(verbose=True)
+
+        self.assertIn("confidential source", output)
+        self.assertIn("geheime Übersetzung", output)
 
 
 class PrintTranslationTests(unittest.TestCase):

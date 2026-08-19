@@ -285,8 +285,11 @@ no input is required between phrases. `Ctrl+C` only ends the running meeting
 process; it does not trigger translation. Fixed-window diagnostic mode reopens
 capture for each block.
 
-Normal mode prints only accepted source text and its translation. Diagnostic
-mode adds audio gates, queue delay, timing, and saved input chunks:
+Normal mode prints one line per phrase: its number, how long it was, and how
+long it took to be ready. It does not print the transcript or the translation,
+so a confidential meeting leaves no content in the terminal or its scrollback.
+Diagnostic mode adds the source text and its translation, audio gates, queue
+delay, timing, and saved input chunks:
 
 ```powershell
 live-translator meeting --profile en-de --verbose --debug-audio-dir debug-asr

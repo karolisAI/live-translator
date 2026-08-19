@@ -223,13 +223,18 @@ class LocalTranslatorPipeline:
         translated = translator.translate(transcript.text)
         self._write_debug_note(debug_wav, transcript.text, translated)
         self._print_asr_rejections(transcript)
-        self._print_translation(transcript.text, translated, transcript.low_confidence)
+        if self._verbose:
+            self._print_translation(transcript.text, translated, transcript.low_confidence)
         rendered = speaker.render(translated) if translated else None
         if self._verbose:
             queue_seconds = max(0.0, started - segment.captured_at)
             print(
                 f"Segment {segment.number}: queue={queue_seconds:.2f}s "
                 f"recognition+translation+synthesis={perf_counter() - started:.2f}s"
+            )
+        else:
+            self._print_phrase_progress(
+                segment, transcript.low_confidence, perf_counter() - started
             )
         return rendered
 
@@ -303,6 +308,25 @@ class LocalTranslatorPipeline:
         print()
         print(f"{source}{marker}: {source_text}")
         print(f"{target}: {target_text}")
+
+    def _print_phrase_progress(
+        self, segment: CapturedSegment, low_confidence: bool, elapsed_seconds: float
+    ) -> None:
+        """Confirm a phrase was handled without saying what it was.
+
+        Normal operation must not print meeting content, but it cannot print
+        nothing either: translated speech goes to the virtual cable rather than
+        the user's own headphones, so they never hear it. Without this line a
+        muted microphone and a working session look identical until the other
+        side says they heard silence. Number, length and elapsed time carry no
+        content and cannot reconstruct any.
+        """
+        marker = "    low confidence" if low_confidence else ""
+        audio_seconds = len(segment.audio) / self._config.audio.sample_rate
+        print(
+            f"Phrase {segment.number:>3}    {audio_seconds:.1f}s    "
+            f"ready in {elapsed_seconds:.1f}s{marker}"
+        )
 
     def _print_asr_rejections(self, result: TranscriptResult) -> None:
         if not self._verbose or not result.rejected_segments:

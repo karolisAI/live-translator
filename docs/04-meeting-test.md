@@ -81,7 +81,8 @@ live-translator meeting --profile de-en
 live-translator meeting --profile en-de --verbose --debug-audio-dir debug-asr
 ```
 
-Diagnostic mode prints energy levels, confidence rejections, and segment timing.
+Diagnostic mode prints the source text and its translation, which normal mode
+withholds, plus energy levels, confidence rejections, and segment timing.
 Each accepted or skipped chunk is written as a WAV with a neighboring text file.
 Listen to the WAV before changing model or threshold settings; an incorrect or
 muffled source device cannot be fixed by ASR tuning.
