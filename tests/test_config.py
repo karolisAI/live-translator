@@ -123,6 +123,7 @@ class ConfigTests(unittest.TestCase):
             {"silence_ms": -1},
             {"max_seconds": -1.0},
             {"tts_length_scale": -1.0},
+            {"piper_timeout_seconds": -1.0},
         )
         for override in overrides:
             with self.subTest(override=override), self.assertRaisesRegex(ValueError, "positive"):
@@ -155,6 +156,7 @@ class ConfigTests(unittest.TestCase):
             tts_model_path="models/tts/de_DE-thorsten-medium.onnx",
             piper_exe="tools/piper/piper.exe",
             tts_length_scale=1.0,
+            piper_timeout_seconds=45.0,
         )
 
         self.assertEqual(config.tts.engine, "piper")
@@ -162,6 +164,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.tts.model_path, "models/tts/de_DE-thorsten-medium.onnx")
         self.assertEqual(config.tts.piper_exe, "tools/piper/piper.exe")
         self.assertEqual(config.tts.length_scale, 1.0)
+        self.assertEqual(config.tts.piper_timeout_seconds, 45.0)
+
+    def test_piper_timeout_defaults_to_thirty_seconds(self) -> None:
+        self.assertEqual(AppConfig().tts.piper_timeout_seconds, 30.0)
 
     def test_loads_tts_speaker_field(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -175,6 +181,7 @@ class ConfigTests(unittest.TestCase):
                         "  piper_exe: tools/piper/piper.exe",
                         "  speaker: '0'",
                         "  length_scale: 1.0",
+                        "  piper_timeout_seconds: 45.0",
                     ]
                 ),
                 encoding="utf-8",
@@ -185,6 +192,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.tts.engine, "piper")
         self.assertEqual(config.tts.speaker, "0")
         self.assertEqual(config.tts.length_scale, 1.0)
+        self.assertEqual(config.tts.piper_timeout_seconds, 45.0)
 
     def test_loads_chunking_settings(self) -> None:
         with TemporaryDirectory() as temp_dir:

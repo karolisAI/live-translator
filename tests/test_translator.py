@@ -1,0 +1,95 @@
+import os
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from live_translator.mt.translator import _argos_package_path
+
+
+class ArgosPackagePathTests(unittest.TestCase):
+    """ARGOS_PACKAGES_DIR / XDG_DATA_HOME are legitimate production overrides
+    (kept deliberately, unlike the bundled-default path's dev-only escape
+    hatch) -- what matters here is that a missing bundled-default candidate
+    falls through to them rather than aborting the whole search."""
+
+    def _no_bundled_default(self):
+        """Guarantee the bundled-default candidate never matches, regardless
+        of what's actually on disk in this repo/environment."""
+        return patch("live_translator.runtime.approved_runtime_roots", return_value=[])
+
+    def test_env_override_is_used_when_it_has_the_package(self) -> None:
+        with TemporaryDirectory() as env_dir, TemporaryDirectory() as xdg_dir:
+            package_dir = Path(env_dir) / "en_de"
+            package_dir.mkdir()
+
+            with (
+                self._no_bundled_default(),
+                patch.dict(
+                    os.environ, {"ARGOS_PACKAGES_DIR": env_dir, "XDG_DATA_HOME": xdg_dir}
+                ),
+            ):
+                result = _argos_package_path("en", "de")
+
+            self.assertEqual(result, package_dir)
+
+    def test_falls_through_to_xdg_when_env_override_lacks_the_package(self) -> None:
+        """Covers two fall-throughs at once: the missing bundled-default
+        candidate, and an ARGOS_PACKAGES_DIR that's set but doesn't contain
+        this language pair -- neither should abort the search early."""
+        with TemporaryDirectory() as env_dir, TemporaryDirectory() as xdg_dir:
+            xdg_package = Path(xdg_dir) / "argos-translate" / "packages" / "en_de"
+            xdg_package.mkdir(parents=True)
+
+            with (
+                self._no_bundled_default(),
+                patch.dict(
+                    os.environ, {"ARGOS_PACKAGES_DIR": env_dir, "XDG_DATA_HOME": xdg_dir}
+                ),
+            ):
+                result = _argos_package_path("en", "de")
+
+            self.assertEqual(result, xdg_package)
+
+    def test_raises_a_clear_actionable_error_when_nothing_is_found(self) -> None:
+        with TemporaryDirectory() as env_dir, TemporaryDirectory() as xdg_dir:
+            with (
+                self._no_bundled_default(),
+                patch.dict(
+                    os.environ, {"ARGOS_PACKAGES_DIR": env_dir, "XDG_DATA_HOME": xdg_dir}
+                ),
+            ):
+                with self.assertRaisesRegex(FileNotFoundError, "argos-install"):
+                    _argos_package_path("en", "de")
+
+    def test_rejects_a_relative_xdg_data_home(self) -> None:
+        env = dict(os.environ)
+        env.pop("ARGOS_PACKAGES_DIR", None)
+        env["XDG_DATA_HOME"] = "relative/dir"
+        with self._no_bundled_default(), patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(ValueError, "absolute"):
+                _argos_package_path("en", "de")
+
+    def test_rejects_an_xdg_data_home_that_does_not_exist(self) -> None:
+        with TemporaryDirectory() as parent_dir:
+            nonexistent = str(Path(parent_dir) / "does-not-exist")
+            env = dict(os.environ)
+            env.pop("ARGOS_PACKAGES_DIR", None)
+            env["XDG_DATA_HOME"] = nonexistent
+            with self._no_bundled_default(), patch.dict(os.environ, env, clear=True):
+                with self.assertRaisesRegex(ValueError, "not an existing directory"):
+                    _argos_package_path("en", "de")
+
+    def test_unset_xdg_data_home_uses_the_default_without_validation(self) -> None:
+        """The ~/.local/share default is not an operator override -- it must
+        not be validated or require existing, only an explicit value should."""
+        env = dict(os.environ)
+        env.pop("ARGOS_PACKAGES_DIR", None)
+        env.pop("XDG_DATA_HOME", None)
+        with self._no_bundled_default(), patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(FileNotFoundError, "argos-install"):
+                _argos_package_path("en", "de")  # must fail on "not found", not validation
+
+
+if __name__ == "__main__":
+    unittest.main()

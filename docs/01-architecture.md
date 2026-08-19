@@ -137,10 +137,23 @@ endpoint. If all three starts fail, that phrase is skipped with a warning while
 capture and recognition remain active. Recognition or translation worker
 failures remain fatal because subsequent phrases cannot be processed safely.
 
-Argos packages are discovered in `ARGOS_PACKAGES_DIR`, the bundled
-`models/argos/packages` directory, or the normal per-user Argos data directory.
-Piper models and the executable are resolved relative to the working directory,
-the installed executable directory, or the PyInstaller bundle directory.
+Piper's executable and voice model, and the bundled-default candidate for
+Argos packages, resolve only against the app's own installed/bundled
+location (`runtime.approved_runtime_roots()`: the frozen executable's
+directory, the PyInstaller bundle directory, or the package root when running
+from source) -- never the current working directory, since anyone able to
+launch the app from an arbitrary directory, or place a file in one already on
+that list, could otherwise get an untrusted file resolved and, for Piper,
+run. A local development override (`LIVE_TRANSLATOR_DEV_RUNTIME_ROOT`) exists
+to unblock testing a build from somewhere else, but is never active unless
+explicitly set, and is not a supported deployment configuration.
+
+Argos packages additionally check `ARGOS_PACKAGES_DIR` and the normal
+per-user Argos data directory (`XDG_DATA_HOME`, or `~/.local/share`) ahead of
+and after the bundled default, respectively. Unlike the bundled-default path,
+these two remain deliberately unrestricted in *where* they may point -- an
+operator pointing at a custom or updated package location is a supported
+use, not a fallback for something missing.
 
 Named Parakeet models use the Hugging Face user cache. That cache is not
 inside this repository or the packaged application.
