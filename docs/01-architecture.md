@@ -14,13 +14,19 @@ a conversation simultaneously.
 
 Meeting mode completes these steps before reporting `Ready`:
 
-1. Load the configured Parakeet model.
+1. Validate the prepared Parakeet model directory, then load from it.
 2. Open the configured Argos CTranslate2 model and SentencePiece tokenizer.
 3. Validate the Piper executable, voice model, and voice JSON.
 4. Resolve the configured input and output devices when capture begins.
 
+Step 1 runs before step 4, so an unprepared machine fails while no audio device
+is open and no meeting audio exists in the process. The model is loaded by
+handing `onnx-asr` the prepared directory, which puts its resolver in offline
+mode: a missing file becomes an error rather than a download. `prepare-models`
+is the only command that fetches one, and it is not part of this sequence.
+
 `doctor --prepare-models` performs the same asset and model checks without
-starting the meeting loop.
+starting the meeting loop, and likewise never downloads.
 
 ## Live Processing
 

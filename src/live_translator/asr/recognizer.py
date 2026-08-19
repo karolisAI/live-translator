@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import zlib
 from dataclasses import dataclass
+from pathlib import Path
 from time import perf_counter
 from typing import Any
 
 from live_translator.defaults import DEFAULT_ASR_MODEL
-from live_translator.errors import MissingDependency, UnsupportedModel
+from live_translator.errors import MissingDependency, ModelNotPrepared, UnsupportedModel
 
-__all__ = ["DEFAULT_MODEL", "ParakeetRecognizer", "Transcript", "compression_ratio"]
+__all__ = [
+    "DEFAULT_MODEL",
+    "ParakeetRecognizer",
+    "Transcript",
+    "compression_ratio",
+    "normalize_quantization",
+]
 
 DEFAULT_MODEL = DEFAULT_ASR_MODEL
 
@@ -139,6 +146,7 @@ class ParakeetRecognizer:
         self,
         model: str = DEFAULT_MODEL,
         *,
+        model_dir: str | Path | None = None,
         quantization: str | None = "int8",
         device: str = "cpu",
         cpu_threads: int = 0,
@@ -179,10 +187,24 @@ class ParakeetRecognizer:
                 f"{', '.join(sorted(_PROVIDERS))}."
             )
 
+        # Passing a directory is what keeps this offline. onnx-asr's resolver
+        # marks an existing path as offline and reads the files straight out of
+        # it; with no path it falls back to fetching from a model host when its
+        # cache misses, which must never happen once a meeting has started.
+        # `model_store.verify_local_model` is what guarantees the directory is
+        # there, so callers with configuration to consult should go through it
+        # first -- see `parakeet_engine.ParakeetAsr`.
+        if model_dir is not None and not Path(model_dir).is_dir():
+            raise ModelNotPrepared(
+                f"No prepared model directory at '{model_dir}'. Loading would "
+                f"fall back to downloading '{model}', which is not allowed here."
+            )
+
         try:
             loaded = onnx_asr.load_model(
                 model,
-                quantization=_normalize_quantization(quantization),
+                None if model_dir is None else str(model_dir),
+                quantization=normalize_quantization(quantization),
                 sess_options=_session_options(cpu_threads),
                 providers=_PROVIDERS[device_key],
             )
@@ -652,7 +674,7 @@ def compression_ratio(text: str) -> float:
     return len(encoded) / len(zlib.compress(encoded))
 
 
-def _normalize_quantization(quantization: str | None) -> str | None:
+def normalize_quantization(quantization: str | None) -> str | None:
     if quantization is None:
         return None
     value = quantization.strip().lower()

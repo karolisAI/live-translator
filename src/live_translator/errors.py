@@ -21,3 +21,13 @@ def require_package(module_name: str, install_name: str | None = None) -> None:
         raise MissingDependency(
             f"Missing dependency '{package}'. Install dependencies with: python -m pip install -e ."
         )
+
+
+class ModelNotPrepared(FileNotFoundError):
+    """The pinned Parakeet model is not present in the local model directory.
+
+    Subclasses `FileNotFoundError` so the CLI's existing handler reports it as
+    a plain error, and so it is not mistaken for a bug: a machine that was
+    never prepared is a supported state with a documented fix, which the
+    message carries.
+    """

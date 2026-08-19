@@ -37,20 +37,35 @@ dist/LiveTranslator/LiveTranslator.exe
 The PyInstaller folder contains the Python runtime, CTranslate2 libraries,
 Argos models, Piper, and both voices.
 
-## Speech Model Cache
+## Speech Model Preparation
 
-The current build does not bundle the speech model. A named model such as
-`nemo-parakeet-tdt-0.6b-v3` is downloaded to the current Windows user's Hugging
-Face cache on its first load. Before offline use on a new machine, run while
-online:
+The installer does not bundle the speech model, so a new machine has to prepare
+it once while online:
 
 ```powershell
-.\dist\LiveTranslator\LiveTranslator.exe doctor `
-  --config "$env:LOCALAPPDATA\LiveTranslator\profiles\en-de.yaml" `
-  --prepare-models
+.\dist\LiveTranslator\LiveTranslator.exe prepare-models --profile en-de
 ```
 
-Repeat for every distinct ASR model referenced by installed profiles.
+An installed build writes it to
+`%LOCALAPPDATA%\LiveTranslator\models\asr\parakeet-tdt-0.6b-v3`, beside the
+profiles rather than inside the installation directory, which is not writable
+for a per-user install and is replaced on upgrade. Because it sits outside the
+application, the model survives an upgrade or uninstall and is prepared once per
+Windows user rather than once per version.
+
+Both generated profiles use the same model, so this is run once, not once per
+profile. Repeat it only for a profile that names a different `asr.model` or
+`asr.compute_type`.
+
+Preparation is the only step that needs the network. Meeting mode reads the
+prepared directory and cannot fall back to downloading; a machine that skipped
+this step fails at startup with the command above, before it opens a
+microphone.
+
+To ship the model inside the installer instead, add `("models/asr",
+"models/asr")` to the asset list in `packaging/windows/LiveTranslator.spec` and
+prepare it in the build tree first. That removes the per-machine step at the
+cost of roughly 640 MB on the installer.
 
 ## Per-User Installation
 

@@ -749,17 +749,17 @@ class EmptyReasonTests(unittest.TestCase):
 
 class QuantizationTests(unittest.TestCase):
     def test_full_precision_aliases_become_none(self) -> None:
-        from live_translator.asr.recognizer import _normalize_quantization
+        from live_translator.asr.recognizer import normalize_quantization
 
         for value in ("auto", "default", "float32", "fp32", "float", "none", " AUTO ", "", None):
             with self.subTest(value=value):
-                self.assertIsNone(_normalize_quantization(value))
+                self.assertIsNone(normalize_quantization(value))
 
     def test_quantization_suffix_is_passed_through(self) -> None:
-        from live_translator.asr.recognizer import _normalize_quantization
+        from live_translator.asr.recognizer import normalize_quantization
 
-        self.assertEqual(_normalize_quantization("int8"), "int8")
-        self.assertEqual(_normalize_quantization(" INT8 "), "int8")
+        self.assertEqual(normalize_quantization("int8"), "int8")
+        self.assertEqual(normalize_quantization(" INT8 "), "int8")
 
 
 class ConcatLogprobsTests(unittest.TestCase):
