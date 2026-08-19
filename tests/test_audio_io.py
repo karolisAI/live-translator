@@ -1,3 +1,5 @@
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -113,6 +115,32 @@ class AudioIoTests(unittest.TestCase):
 
         self.assertEqual(sounddevice.starts, [26, 26, 26])
         self.assertEqual(sounddevice.writes, [])
+
+
+class LazyAudioImportTests(unittest.TestCase):
+    def test_importing_the_package_does_not_load_sounddevice(self) -> None:
+        """sounddevice loads PortAudio at import time and raises OSError when the
+        library is absent. Keeping every import inside a function is what lets the
+        suite -- and `doctor` -- run on a machine with no audio stack at all. A
+        module-level import would only fail off Windows, which is the kind of
+        breakage that is easiest to miss."""
+        probe = """
+import importlib, pkgutil, sys
+import live_translator
+for module in pkgutil.walk_packages(live_translator.__path__, 'live_translator.'):
+    importlib.import_module(module.name)
+print('sounddevice' in sys.modules)
+"""
+
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "False")
 
 
 if __name__ == "__main__":
