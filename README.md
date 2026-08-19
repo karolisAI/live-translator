@@ -200,8 +200,10 @@ asr:
 ```
 
 The first run downloads the model into the Hugging Face cache and needs internet
-access. `doctor --prepare-models` does that download ahead of time; later runs
-are offline.
+access. `doctor --config <profile> --prepare-models` does that download ahead of
+time; later runs are offline. `--prepare-models` reads the model name from the
+profile, so it needs `--config <path>` or `--profile <name>` and fails without
+one.
 
 The recognizer itself is in
 [src/live_translator/asr/recognizer.py](src/live_translator/asr/recognizer.py)
@@ -298,6 +300,10 @@ Check dependencies without touching a profile:
 live-translator doctor
 ```
 
+Add `--profile <name>` (or `--config <path>`) to also validate that profile's
+devices, translation and voice; add `--prepare-models` to load its speech model
+as well.
+
 If a device fails to open, try each one and see which ones actually work. The
 output probe plays silence, so it is safe to run during a call:
 
@@ -342,8 +348,8 @@ the complete PyInstaller application folder; recipients do not also need the
 `packaging\windows\LiveTranslator.iss` before producing a release build.
 
 The speech model remains in each Windows user's Hugging Face cache, so run
-`doctor --prepare-models` online once on every target machine before relying on
-offline operation.
+`doctor --config <profile> --prepare-models` online once on every target machine
+before relying on offline operation.
 
 ## Verification
 

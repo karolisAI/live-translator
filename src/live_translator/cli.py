@@ -86,11 +86,17 @@ def build_parser() -> argparse.ArgumentParser:
     route.set_defaults(func=cmd_route_test)
 
     doctor = subparsers.add_parser("doctor", help="check local dependencies")
+    doctor.add_argument(
+        "--profile",
+        default=None,
+        help="profile name to validate; omit to check dependencies only",
+    )
     doctor.add_argument("--config", default=None, help="also validate config-specific settings")
     doctor.add_argument(
         "--prepare-models",
         action="store_true",
-        help="load the configured ASR and translation models now",
+        help="also load the profile's speech model; translation and voice are "
+        "checked by any profile validation",
     )
     doctor.set_defaults(func=cmd_doctor)
 
@@ -207,6 +213,13 @@ def add_chunker_options(parser: argparse.ArgumentParser) -> None:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
+    config_path = _doctor_config_path(args)
+    if args.prepare_models and config_path is None:
+        raise ValueError(
+            "--prepare-models needs a profile to know which model to fetch; "
+            "pass --profile <name> or --config <path>."
+        )
+
     checks = [
         ("numpy", "audio arrays", True),
         ("sounddevice", "audio capture/playback", True),
@@ -227,9 +240,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             missing_required = True
 
     config_ok = True
-    if args.config:
+    if config_path is not None:
         config_ok = _print_config_checks(
-            load_config(Path(args.config)),
+            load_config(config_path),
             prepare_models=args.prepare_models,
         )
     if missing_required:
@@ -237,6 +250,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if missing_required or not config_ok:
         return 1
     return 0
+
+
+def _doctor_config_path(args: argparse.Namespace) -> Path | None:
+    """Config to validate, or None when doctor should only check dependencies."""
+    if args.config:
+        return Path(args.config)
+    if args.profile:
+        return default_profile_path(args.profile)
+    return None
 
 
 def _print_config_checks(config, *, prepare_models: bool) -> bool:

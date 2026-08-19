@@ -17,8 +17,11 @@ class ParakeetAsr:
     configuration; this class is the only place the two meet.
     """
 
+    ENGINE_NAME = "parakeet"
+    """The `asr.engine` value that selects this class in `defaults.ASR_ENGINES`."""
+
     def __init__(self, settings: AsrSettings) -> None:
-        if settings.engine.lower() != "parakeet":
+        if settings.engine.lower() != self.ENGINE_NAME:
             raise ValueError(f"Unsupported ASR engine: {settings.engine}")
 
         self._settings = settings

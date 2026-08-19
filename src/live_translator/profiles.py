@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from live_translator.audio.devices import AudioDevice, list_devices
+from live_translator.defaults import DEFAULT_ASR_ENGINE, DEFAULT_ASR_MODEL
 from live_translator.errors import MissingDependency
 from live_translator.runtime import default_profile_path
 
@@ -50,8 +51,8 @@ def write_meeting_profile(
             "playback_gain": 0.7,
         },
         "asr": {
-            "engine": "parakeet",
-            "model": "nemo-parakeet-tdt-0.6b-v3",
+            "engine": DEFAULT_ASR_ENGINE,
+            "model": DEFAULT_ASR_MODEL,
             "device": "cpu",
             "compute_type": "int8",
             "cpu_threads": 8,

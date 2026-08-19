@@ -5,11 +5,12 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 
+from live_translator.defaults import DEFAULT_ASR_MODEL
 from live_translator.errors import MissingDependency, UnsupportedModel
 
 __all__ = ["DEFAULT_MODEL", "ParakeetRecognizer", "Transcript", "compression_ratio"]
 
-DEFAULT_MODEL = "nemo-parakeet-tdt-0.6b-v3"
+DEFAULT_MODEL = DEFAULT_ASR_MODEL
 
 # onnx-asr exposes quantization as a suffix on the ONNX file names. Callers
 # often carry a Whisper-style `compute_type` string instead, so the values that

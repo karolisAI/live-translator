@@ -1,4 +1,7 @@
-from live_translator.config import _SUPPORTED_ASR_ENGINES, AsrSettings
+import importlib
+
+from live_translator.config import AsrSettings
+from live_translator.defaults import ASR_ENGINES, SUPPORTED_ASR_ENGINES
 
 from .base import AsrEngine, TranscriptResult
 from .parakeet_engine import ParakeetAsr
@@ -15,10 +18,11 @@ __all__ = [
     "create_asr",
 ]
 
-SUPPORTED_ASR_ENGINES = _SUPPORTED_ASR_ENGINES
-
 
 def create_asr(settings: AsrSettings) -> AsrEngine:
-    if settings.engine.lower() == "parakeet":
-        return ParakeetAsr(settings)
-    raise ValueError(f"Unsupported ASR engine: {settings.engine}")
+    target = ASR_ENGINES.get(settings.engine.lower())
+    if target is None:
+        raise ValueError(f"Unsupported ASR engine: {settings.engine}")
+    module_name, _, attribute = target.partition(":")
+    engine_class = getattr(importlib.import_module(module_name), attribute)
+    return engine_class(settings)

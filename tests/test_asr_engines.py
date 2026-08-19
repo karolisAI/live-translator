@@ -1,5 +1,8 @@
+import io
 import unittest
-from dataclasses import dataclass
+from contextlib import redirect_stderr
+from dataclasses import dataclass, replace
+from importlib import import_module
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -8,7 +11,15 @@ import numpy as np
 
 from live_translator.asr import SUPPORTED_ASR_ENGINES, create_asr
 from live_translator.asr.parakeet_engine import ParakeetAsr
-from live_translator.config import AsrSettings, apply_cli_overrides, load_config
+from live_translator.cli import build_parser
+from live_translator.config import (
+    AppConfig,
+    AsrSettings,
+    apply_cli_overrides,
+    load_config,
+    validate_config,
+)
+from live_translator.defaults import ASR_ENGINES, DEFAULT_ASR_ENGINE
 from live_translator.errors import UnsupportedModel
 
 
@@ -166,6 +177,66 @@ class AsrFactoryTests(unittest.TestCase):
 
     def test_supported_engines_list(self) -> None:
         self.assertEqual(SUPPORTED_ASR_ENGINES, ("parakeet",))
+
+
+class AsrRegistryTests(unittest.TestCase):
+    """`defaults.ASR_ENGINES` is the one place an engine is declared. These pin
+    the three consumers -- the factory, config validation and the CLI choices --
+    to it, so a new entry cannot reach some of them and not the others."""
+
+    def test_supported_engines_are_exactly_the_registry_keys(self) -> None:
+        self.assertEqual(SUPPORTED_ASR_ENGINES, tuple(ASR_ENGINES))
+
+    def test_every_registered_engine_resolves_and_is_an_asr_engine(self) -> None:
+        for name, target in ASR_ENGINES.items():
+            with self.subTest(engine=name):
+                module_name, separator, attribute = target.partition(":")
+                self.assertTrue(separator, f"{name} must be 'module:attribute'")
+                engine_class = getattr(import_module(module_name), attribute)
+                self.assertTrue(callable(getattr(engine_class, "transcribe", None)))
+                self.assertEqual(engine_class.ENGINE_NAME, name)
+
+    def test_factory_builds_every_registered_engine(self) -> None:
+        for name in ASR_ENGINES:
+            with self.subTest(engine=name):
+                with patch("live_translator.asr.parakeet_engine.ParakeetRecognizer"):
+                    engine = create_asr(AsrSettings(engine=name))
+
+                self.assertEqual(type(engine).ENGINE_NAME, name)
+
+    def test_config_validation_accepts_every_registered_engine(self) -> None:
+        for name in ASR_ENGINES:
+            with self.subTest(engine=name):
+                validate_config(replace(AppConfig(), asr=AsrSettings(engine=name)))
+
+    def test_config_validation_rejects_what_the_registry_omits(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unsupported ASR engine"):
+            validate_config(replace(AppConfig(), asr=AsrSettings(engine="whisper.cpp")))
+
+    def test_cli_offers_exactly_the_registered_engines(self) -> None:
+        parser = build_parser()
+
+        for command in ("meeting", "transcribe-once"):
+            for name in ASR_ENGINES:
+                with self.subTest(command=command, engine=name):
+                    args = parser.parse_args([command, "--asr-engine", name])
+                    self.assertEqual(args.asr_engine, name)
+
+            with self.subTest(command=command, engine="unregistered"):
+                with redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        parser.parse_args([command, "--asr-engine", "whisper.cpp"])
+
+    def test_default_engine_is_registered(self) -> None:
+        self.assertIn(DEFAULT_ASR_ENGINE, ASR_ENGINES)
+        self.assertEqual(AppConfig().asr.engine, DEFAULT_ASR_ENGINE)
+
+    def test_an_unregistered_engine_is_rejected_everywhere(self) -> None:
+        """The failure mode this centralization exists to prevent: a name that
+        one consumer accepts and another does not."""
+        with patch.dict(ASR_ENGINES, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "Unsupported ASR engine"):
+                create_asr(AsrSettings(engine="parakeet"))
 
 
 class ParakeetConfigTests(unittest.TestCase):

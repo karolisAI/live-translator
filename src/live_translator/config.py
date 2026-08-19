@@ -4,12 +4,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from .defaults import DEFAULT_ASR_ENGINE, DEFAULT_ASR_MODEL, SUPPORTED_ASR_ENGINES
 from .errors import MissingDependency
-
-
-_SUPPORTED_ASR_ENGINES = ("parakeet",)
-
-_DEFAULT_ASR_MODEL = "nemo-parakeet-tdt-0.6b-v3"
 
 
 @dataclass(frozen=True)
@@ -25,8 +21,8 @@ class AudioSettings:
 
 @dataclass(frozen=True)
 class AsrSettings:
-    engine: str = "parakeet"
-    model: str = _DEFAULT_ASR_MODEL
+    engine: str = DEFAULT_ASR_ENGINE
+    model: str = DEFAULT_ASR_MODEL
     device: str = "cpu"
     compute_type: str = "int8"
     cpu_threads: int = 0
@@ -267,7 +263,7 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("audio.input_gain must be positive")
     if config.audio.playback_gain <= 0.0:
         raise ValueError("audio.playback_gain must be positive")
-    if config.asr.engine.lower() not in _SUPPORTED_ASR_ENGINES:
+    if config.asr.engine.lower() not in SUPPORTED_ASR_ENGINES:
         raise ValueError(f"Unsupported ASR engine: {config.asr.engine}")
     if not config.asr.model:
         raise ValueError("asr.model must not be empty")
@@ -380,8 +376,8 @@ def _load_audio(raw: dict[str, Any]) -> AudioSettings:
 
 def _load_asr(raw: dict[str, Any]) -> AsrSettings:
     return AsrSettings(
-        engine=_str(raw, "engine", "parakeet"),
-        model=_str(raw, "model", _DEFAULT_ASR_MODEL),
+        engine=_str(raw, "engine", DEFAULT_ASR_ENGINE),
+        model=_str(raw, "model", DEFAULT_ASR_MODEL),
         device=_str(raw, "device", "cpu"),
         compute_type=_str(raw, "compute_type", "int8"),
         cpu_threads=_nonnegative_int(raw, "cpu_threads", 0),
