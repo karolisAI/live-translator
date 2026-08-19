@@ -9,6 +9,13 @@ from live_translator.audio.devices import describe_device_selection
 from live_translator.audio.io import play_mono, record_mono, write_wav
 from live_translator.audio.rolling import RollingSpeechChunker
 from live_translator.config import AppConfig
+from live_translator.diagnostics import (
+    NOTE_SUFFIX,
+    capture_warning,
+    resolve_capture_dir,
+    segment_audio_name,
+    session_directory_name,
+)
 from live_translator.mt import TranslationEngine
 from live_translator.realtime import CapturedSegment, RealtimeMeetingWorkers
 from live_translator.tts import RenderedSpeech, TtsSpeaker
@@ -110,16 +117,16 @@ class LocalTranslatorPipeline:
         debug_audio_dir: str | Path | None = None,
         *,
         verbose: bool = False,
+        diagnostics: bool = False,
     ) -> None:
         self._verbose = verbose
         self._print_audio_route()
         self.prepare()
         translator = self._get_translator()
         speaker = self._get_speaker()
-        debug_dir = Path(debug_audio_dir) if debug_audio_dir else None
-        if debug_dir is not None:
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            print(f"Writing debug audio chunks to {debug_dir}")
+        debug_dir = self._start_diagnostics(
+            diagnostics=diagnostics, debug_audio_dir=debug_audio_dir
+        )
         chunker = (chunker_mode or self._config.chunking.mode).lower()
         if chunker in {"phrase", "speech"}:
             chunker = "vad"
@@ -336,17 +343,47 @@ class LocalTranslatorPipeline:
             reasons += ", ..."
         print(f"ASR rejected {result.rejected_segments} low-confidence/no-speech segment(s): {reasons}")
 
+    def _start_diagnostics(
+        self, *, diagnostics: bool, debug_audio_dir: str | Path | None
+    ) -> Path | None:
+        """Decide whether this session captures meeting content, and where.
+
+        Off unless somebody asked for it: the flag, the config setting, or an
+        explicit path, which implies the flag so existing habits keep working.
+        Returning None is what makes a normal meeting write nothing at all --
+        the directory is not created, so there is no empty folder implying
+        something was recorded. A directory that cannot be created returns
+        None too: on a locked-down machine, losing diagnostics is an
+        inconvenience and losing the meeting is not.
+        """
+        settings = self._config.diagnostics
+        if not (diagnostics or settings.enabled or debug_audio_dir):
+            return None
+
+        try:
+            capture_dir = resolve_capture_dir(settings, debug_audio_dir) / session_directory_name()
+            capture_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(
+                f"Diagnostic capture could not start: {exc}. "
+                "Continuing without it; the meeting is not affected."
+            )
+            return None
+
+        print(capture_warning(capture_dir))
+        return capture_dir
+
     def _write_debug_audio(self, debug_dir: Path | None, segment_number: int, audio) -> Path | None:
         if debug_dir is None:
             return None
-        path = debug_dir / f"segment-{segment_number:04d}.wav"
+        path = debug_dir / segment_audio_name(segment_number)
         write_wav(path, audio, self._config.audio.sample_rate)
         return path
 
     def _write_debug_note(self, wav_path: Path | None, source: str, target: str) -> None:
         if wav_path is None:
             return
-        note_path = wav_path.with_suffix(".txt")
+        note_path = wav_path.with_suffix(NOTE_SUFFIX)
         note_path.write_text(
             "\n".join(
                 [

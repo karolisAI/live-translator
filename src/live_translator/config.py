@@ -73,6 +73,22 @@ class RealtimeSettings:
 
 
 @dataclass(frozen=True)
+class DiagnosticsSettings:
+    """Capture of meeting content for troubleshooting. Off unless asked for.
+
+    `dir` empty means the per-user default. A relative path is resolved under
+    that directory rather than the working directory, so diagnostics cannot
+    land in a checkout. Retention values are in `live_translator.diagnostics`;
+    0 means no limit on that dimension.
+    """
+
+    enabled: bool = False
+    dir: str | None = None
+    retention_days: int = 7
+    max_total_mb: int = 500
+
+
+@dataclass(frozen=True)
 class AppConfig:
     audio: AudioSettings = AudioSettings()
     asr: AsrSettings = AsrSettings()
@@ -80,6 +96,7 @@ class AppConfig:
     tts: TtsSettings = TtsSettings()
     chunking: ChunkingSettings = ChunkingSettings()
     realtime: RealtimeSettings = RealtimeSettings()
+    diagnostics: DiagnosticsSettings = DiagnosticsSettings()
 
 
 _SECTION_KEYS: dict[str, set[str]] = {
@@ -123,6 +140,7 @@ _SECTION_KEYS: dict[str, set[str]] = {
         "noise_multiplier",
     },
     "realtime": {"recognition_queue_size", "playback_queue_size"},
+    "diagnostics": {"enabled", "dir", "retention_days", "max_total_mb"},
 }
 
 
@@ -153,6 +171,7 @@ def load_config(path: str | Path | None) -> AppConfig:
         tts=_load_tts(raw.get("tts") or {}),
         chunking=_load_chunking(raw.get("chunking") or raw.get("vad") or {}),
         realtime=_load_realtime(raw.get("realtime") or {}),
+        diagnostics=_load_diagnostics(raw.get("diagnostics") or {}),
     )
     validate_config(config)
     return config
@@ -429,6 +448,15 @@ def _load_realtime(raw: dict[str, Any]) -> RealtimeSettings:
     return RealtimeSettings(
         recognition_queue_size=_int(raw, "recognition_queue_size", 2),
         playback_queue_size=_int(raw, "playback_queue_size", 1),
+    )
+
+
+def _load_diagnostics(raw: dict[str, Any]) -> DiagnosticsSettings:
+    return DiagnosticsSettings(
+        enabled=_bool(raw, "enabled", False),
+        dir=_str_or_none(raw, "dir"),
+        retention_days=_nonnegative_int(raw, "retention_days", 7),
+        max_total_mb=_nonnegative_int(raw, "max_total_mb", 500),
     )
 
 

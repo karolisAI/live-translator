@@ -79,5 +79,25 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.chunker, "rolling")
 
 
+class DiagnosticsFlagTests(unittest.TestCase):
+    """Capture must take a deliberate act. Parsing is where that starts."""
+
+    def test_meeting_defaults_to_no_capture(self) -> None:
+        args = build_parser().parse_args(["meeting", "--profile", "en-de"])
+
+        self.assertFalse(args.diagnostics)
+        self.assertIsNone(args.debug_audio_dir)
+
+    def test_meeting_accepts_the_diagnostics_flag(self) -> None:
+        args = build_parser().parse_args(["meeting", "--profile", "en-de", "--diagnostics"])
+
+        self.assertTrue(args.diagnostics)
+
+    def test_loopback_accepts_the_diagnostics_flag(self) -> None:
+        args = build_parser().parse_args(["loopback", "--diagnostics"])
+
+        self.assertTrue(args.diagnostics)
+
+
 if __name__ == "__main__":
     unittest.main()

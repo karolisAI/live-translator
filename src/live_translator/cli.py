@@ -73,7 +73,16 @@ def build_parser() -> argparse.ArgumentParser:
     meeting.add_argument("--asr-engine", default=None, choices=SUPPORTED_ASR_ENGINES, help="override the ASR engine")
     meeting.add_argument("--model", default=None, help="ASR model name or local model path")
     meeting.add_argument("--input-gain", type=float, default=None, help="multiply microphone samples before ASR")
-    meeting.add_argument("--debug-audio-dir", default=None, help="write each ASR input chunk as a WAV file")
+    meeting.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="capture this meeting's audio, transcripts and translations for troubleshooting",
+    )
+    meeting.add_argument(
+        "--debug-audio-dir",
+        default=None,
+        help="capture to this directory instead of the default one; implies --diagnostics",
+    )
     meeting.add_argument("--verbose", action="store_true", help="show audio gates and per-segment timings")
     add_chunker_options(meeting)
     meeting.set_defaults(func=cmd_meeting)
@@ -159,7 +168,16 @@ def build_parser() -> argparse.ArgumentParser:
     loopback.add_argument("--translation-engine", choices=TRANSLATION_ENGINES, default=None)
     add_tts_options(loopback)
     add_chunker_options(loopback)
-    loopback.add_argument("--debug-audio-dir", default=None, help="write each ASR input chunk as a WAV file")
+    loopback.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="capture this session's audio, transcripts and translations for troubleshooting",
+    )
+    loopback.add_argument(
+        "--debug-audio-dir",
+        default=None,
+        help="capture to this directory instead of the default one; implies --diagnostics",
+    )
     loopback.add_argument("--verbose", action="store_true", help="show audio gates and per-segment timings")
     loopback.set_defaults(func=cmd_loopback)
 
@@ -400,6 +418,7 @@ def cmd_meeting(args: argparse.Namespace) -> int:
     LocalTranslatorPipeline(config).loopback(
         debug_audio_dir=args.debug_audio_dir,
         verbose=args.verbose,
+        diagnostics=args.diagnostics,
     )
     return 0
 
@@ -490,6 +509,7 @@ def cmd_loopback(args: argparse.Namespace) -> int:
     LocalTranslatorPipeline(config).loopback(
         debug_audio_dir=args.debug_audio_dir,
         verbose=args.verbose,
+        diagnostics=args.diagnostics,
     )
     return 0
 
