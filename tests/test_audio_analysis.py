@@ -1,3 +1,5 @@
+import subprocess
+import sys
 import unittest
 
 import numpy as np
@@ -66,6 +68,57 @@ class AudioAnalysisTests(unittest.TestCase):
                 min_active_ratio=0.08,
             )
         )
+
+
+class NoAudioStackTests(unittest.TestCase):
+    def test_analysis_runs_without_portaudio(self) -> None:
+        """Analysis is arithmetic on samples and must not need an audio device.
+
+        `_audio_packages()` imports sounddevice, which loads PortAudio and raises
+        OSError where the library is absent, so calling it here made every analysis
+        test fail on a machine with no audio stack. Run in a subprocess because the
+        import has to fail for real, and blocking it in-process would leak into the
+        rest of the suite.
+        """
+        probe = """
+import sys
+
+class _NoPortAudio:
+    def find_spec(self, name, path=None, target=None):
+        if name == "sounddevice":
+            raise OSError("PortAudio library not found")
+        return None
+
+sys.meta_path.insert(0, _NoPortAudio())
+
+import numpy as np
+
+from live_translator.audio.analysis import analyze_audio, has_enough_audio_energy
+
+stats = analyze_audio(
+    np.full(16000, 0.2, dtype=np.float32),
+    16000,
+    frame_ms=30,
+    active_rms_threshold=0.012,
+)
+passed = has_enough_audio_energy(
+    stats,
+    rms_threshold=0.012,
+    peak_threshold=0.025,
+    min_active_ratio=0.06,
+)
+print(round(stats.duration_seconds, 3), passed)
+"""
+
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "1.0 True")
 
 
 if __name__ == "__main__":

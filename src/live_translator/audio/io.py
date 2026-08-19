@@ -156,13 +156,29 @@ def read_wav_mono(path: str | Path) -> tuple[Any, int]:
     return samples, sample_rate
 
 
-def _audio_packages():
+def _numpy_package():
+    """numpy alone, for code that computes on samples without touching a device.
+
+    Importing sounddevice loads PortAudio and raises OSError where the library is
+    absent, so pulling it in for pure arithmetic makes analysis code fail on a
+    machine that has no audio stack at all -- including CI.
+    """
     try:
         import numpy as np
+    except ImportError as exc:
+        raise MissingDependency(
+            "Missing dependency 'numpy'. Install dependencies with: python -m pip install -e ."
+        ) from exc
+    return np
+
+
+def _audio_packages():
+    np = _numpy_package()
+    try:
         import sounddevice as sd
     except ImportError as exc:
         raise MissingDependency(
-            "Missing dependency 'numpy' or 'sounddevice'. Install dependencies with: python -m pip install -e ."
+            "Missing dependency 'sounddevice'. Install dependencies with: python -m pip install -e ."
         ) from exc
     return sd, np
 
