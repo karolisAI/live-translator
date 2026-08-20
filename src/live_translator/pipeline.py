@@ -32,6 +32,7 @@ class LocalTranslatorPipeline:
         self._speaker: TtsSpeaker | None = None
         self._verbose = False
         self._capture_limits: CaptureLimits | None = None
+        self._show_text = False
 
     def prepare(self, *, include_tts: bool = True) -> None:
         started = perf_counter()
@@ -122,8 +123,10 @@ class LocalTranslatorPipeline:
         *,
         verbose: bool = False,
         diagnostics: bool = False,
+        show_text: bool = False,
     ) -> None:
         self._verbose = verbose
+        self._show_text = show_text
         self._print_audio_route()
         self.prepare()
         translator = self._get_translator()
@@ -143,6 +146,7 @@ class LocalTranslatorPipeline:
         target = self._config.translation.target_language.upper()
         print(f"Direction: {source} -> {target}")
         print("Live translation active. Listening continuously between phrases.")
+        self._announce_text_display()
         if self._verbose and chunker == "vad":
             print(
                 f"Chunker=vad silence={self._config.chunking.silence_ms}ms "
@@ -236,7 +240,7 @@ class LocalTranslatorPipeline:
         translated = translator.translate(transcript.text)
         self._write_debug_note(debug_wav, transcript.text, translated)
         self._print_asr_rejections(transcript)
-        if self._verbose:
+        if self._verbose or self._show_text:
             self._print_translation(transcript.text, translated, transcript.low_confidence)
         rendered = speaker.render(translated) if translated else None
         if self._verbose:
@@ -245,7 +249,7 @@ class LocalTranslatorPipeline:
                 f"Segment {segment.number}: queue={queue_seconds:.2f}s "
                 f"recognition+translation+synthesis={perf_counter() - started:.2f}s"
             )
-        else:
+        elif not self._show_text:
             self._print_phrase_progress(
                 segment, transcript.low_confidence, perf_counter() - started
             )
@@ -321,6 +325,19 @@ class LocalTranslatorPipeline:
         print()
         print(f"{source}{marker}: {source_text}")
         print(f"{target}: {target_text}")
+
+    def _announce_text_display(self) -> None:
+        """Say once that the conversation will be on screen.
+
+        Showing it is a deliberate choice, but the consequence is easy to
+        forget: the terminal keeps scrollback, and a screen share shows it
+        live. Not printed under --verbose, whose output other tooling parses.
+        """
+        if self._show_text and not self._verbose:
+            print(
+                "Showing transcripts and translations on screen. They remain in "
+                "the terminal scrollback and are visible on a screen share."
+            )
 
     def _print_phrase_progress(
         self, segment: CapturedSegment, low_confidence: bool, elapsed_seconds: float

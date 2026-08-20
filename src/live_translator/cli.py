@@ -80,6 +80,11 @@ def build_parser() -> argparse.ArgumentParser:
     meeting.add_argument("--model", default=None, help="ASR model name or local model path")
     meeting.add_argument("--input-gain", type=float, default=None, help="multiply microphone samples before ASR")
     meeting.add_argument(
+        "--show-text",
+        action="store_true",
+        help="print each phrase and its translation on screen; writes nothing to disk",
+    )
+    meeting.add_argument(
         "--diagnostics",
         action="store_true",
         help="capture this meeting's audio, transcripts and translations for troubleshooting",
@@ -182,6 +187,11 @@ def build_parser() -> argparse.ArgumentParser:
     loopback.add_argument("--translation-engine", choices=TRANSLATION_ENGINES, default=None)
     add_tts_options(loopback)
     add_chunker_options(loopback)
+    loopback.add_argument(
+        "--show-text",
+        action="store_true",
+        help="print each phrase and its translation on screen; writes nothing to disk",
+    )
     loopback.add_argument(
         "--diagnostics",
         action="store_true",
@@ -475,6 +485,7 @@ def cmd_meeting(args: argparse.Namespace) -> int:
         debug_audio_dir=args.debug_audio_dir,
         verbose=args.verbose,
         diagnostics=args.diagnostics,
+        show_text=args.show_text,
     )
     return 0
 
@@ -566,6 +577,7 @@ def cmd_loopback(args: argparse.Namespace) -> int:
         debug_audio_dir=args.debug_audio_dir,
         verbose=args.verbose,
         diagnostics=args.diagnostics,
+        show_text=args.show_text,
     )
     return 0
 

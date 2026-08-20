@@ -177,5 +177,17 @@ class PurgeCommandTests(unittest.TestCase):
         self.assertTrue((self.root / "tax-return.pdf").exists())
 
 
+    def test_meeting_accepts_show_text(self) -> None:
+        args = build_parser().parse_args(["meeting", "--profile", "en-de", "--show-text"])
+
+        self.assertTrue(args.show_text)
+        self.assertFalse(args.diagnostics)
+
+    def test_loopback_accepts_show_text(self) -> None:
+        args = build_parser().parse_args(["loopback", "--show-text"])
+
+        self.assertTrue(args.show_text)
+
+
 if __name__ == "__main__":
     unittest.main()
