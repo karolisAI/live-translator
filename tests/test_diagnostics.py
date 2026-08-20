@@ -7,8 +7,9 @@ meeting must leave no audio, transcript or translation behind.
 """
 
 import io
+import os
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -17,7 +18,10 @@ from unittest.mock import patch
 from live_translator.config import AppConfig, DiagnosticsSettings, load_config
 from live_translator.pipeline import LocalTranslatorPipeline
 from live_translator.diagnostics import (
+    LOW_WATER_FRACTION,
+    CaptureLimits,
     capture_warning,
+    sweep,
     segment_note_name,
     session_directory_name,
     resolve_capture_dir,
@@ -69,10 +73,17 @@ class DiagnosticsDefaultsTests(unittest.TestCase):
 class CaptureDirectoryTests(unittest.TestCase):
     """Every path must land under the per-user directory unless the user was
     explicit about an absolute one. The working directory is usually a
-    checkout, which is how transcripts end up beside source code."""
+    checkout, which is how transcripts end up beside source code.
+
+    Paths here are built rather than written as literals: CI runs this suite on
+    Ubuntu as well as Windows, and a string like "D:\scratch" is an absolute
+    path on one and a single filename on the other.
+    """
 
     def setUp(self) -> None:
-        self.root = Path(r"C:\Users\test\AppData\Local\LiveTranslator\diagnostics")
+        self._temp = TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.root = Path(self._temp.name).resolve() / "LiveTranslator" / "diagnostics"
         patcher = patch("live_translator.diagnostics.diagnostics_dir", return_value=self.root)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -86,17 +97,18 @@ class CaptureDirectoryTests(unittest.TestCase):
         self.assertEqual(resolve_capture_dir(settings), self.root / "capture")
 
     def test_relative_cli_path_does_not_land_in_the_working_directory(self) -> None:
-        """`--debug-audio-dir debug-asr` is what the README used to teach, and
-        it wrote into whatever directory the user was standing in."""
+        """--debug-audio-dir debug-asr is what the README used to teach, and it
+        wrote into whatever directory the user was standing in."""
         resolved = resolve_capture_dir(DiagnosticsSettings(), "debug-asr")
 
         self.assertEqual(resolved, self.root / "debug-asr")
         self.assertNotEqual(resolved, Path("debug-asr").resolve())
 
     def test_absolute_path_is_honoured_as_given(self) -> None:
-        resolved = resolve_capture_dir(DiagnosticsSettings(), r"D:\scratch\asr")
+        elsewhere = Path(self._temp.name).resolve() / "somewhere-else"
 
-        self.assertEqual(resolved, Path(r"D:\scratch\asr"))
+        self.assertTrue(elsewhere.is_absolute(), "the test itself must pass an absolute path")
+        self.assertEqual(resolve_capture_dir(DiagnosticsSettings(), str(elsewhere)), elsewhere)
 
     def test_cli_path_wins_over_the_config_setting(self) -> None:
         settings = DiagnosticsSettings(dir="from-config")
@@ -104,8 +116,9 @@ class CaptureDirectoryTests(unittest.TestCase):
         self.assertEqual(resolve_capture_dir(settings, "from-cli"), self.root / "from-cli")
 
     def test_relative_path_climbing_out_is_refused(self) -> None:
+        # forward slashes parse as a path on both platforms; backslashes do not
         with self.assertRaises(ValueError):
-            resolve_capture_dir(DiagnosticsSettings(), r"..\..\..\Desktop")
+            resolve_capture_dir(DiagnosticsSettings(), "../../../Desktop")
 
 
 class ArtifactNameTests(unittest.TestCase):
@@ -128,7 +141,6 @@ class ArtifactNameTests(unittest.TestCase):
         name = session_directory_name(datetime(2026, 8, 19, 14, 32, 5))
 
         self.assertTrue(name.startswith("session-20260819-143205-"))
-
 
 class CaptureActivationTests(unittest.TestCase):
     """Nothing is captured, and no directory is even created, until somebody
@@ -216,11 +228,158 @@ class CaptureWarningTests(unittest.TestCase):
     def test_warning_names_both_kinds_of_artifact(self) -> None:
         """The message this replaced said only "debug audio chunks", naming the
         large obvious file and not the readable one beside it."""
-        text = capture_warning(Path(r"C:\some\where"))
+        directory = Path("somewhere") / "diagnostics"
+        text = capture_warning(directory, DiagnosticsSettings())
 
         self.assertIn("segment-NNNN.wav", text)
         self.assertIn("segment-NNNN.txt", text)
-        self.assertIn(r"C:\some\where", text)
+        self.assertIn(str(directory), text)
+
+
+class RetentionTests(unittest.TestCase):
+    """Both limits, and the rule that decides what goes first.
+
+    Covers the ticket test case: retention cleanup removes artifacts exceeding
+    the configured age or size.
+    """
+
+    def setUp(self) -> None:
+        self._temp = TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.root = Path(self._temp.name) / "diagnostics"
+        self.root.mkdir(parents=True)
+
+    def _session(self, name: str, *, phrases: int = 1, kb: int = 1, age_days: float = 0.0) -> Path:
+        session = self.root / f"session-{name}"
+        session.mkdir(exist_ok=True)
+        when = (datetime.now() - timedelta(days=age_days)).timestamp()
+        for n in range(1, phrases + 1):
+            for path in (session / segment_audio_name(n), session / segment_note_name(n)):
+                path.write_bytes(b"x" * (kb * 1024))
+                os.utime(path, (when, when))
+        return session
+
+    def test_artifacts_past_the_age_limit_are_removed(self) -> None:
+        old = self._session("20260801-120000-1", age_days=9)
+        recent = self._session("20260819-120000-2", age_days=1)
+
+        result = sweep(DiagnosticsSettings(retention_days=7, max_total_mb=0), self.root)
+
+        self.assertFalse(old.exists(), "an expired session should be gone, directory and all")
+        self.assertEqual(len(list(recent.iterdir())), 2)
+        self.assertEqual(result.files_removed, 2)
+
+    def test_age_limit_reaches_inside_a_running_session(self) -> None:
+        """A session left open for days would otherwise keep its first day forever."""
+        current = self._session("20260812-090000-3", phrases=2, age_days=9)
+
+        sweep(DiagnosticsSettings(retention_days=7, max_total_mb=0), self.root,
+              current_session=current)
+
+        self.assertTrue(current.is_dir(), "the directory of a running session must survive")
+        self.assertEqual(list(current.iterdir()), [])
+
+    def test_size_limit_deletes_oldest_first_down_to_the_low_water_mark(self) -> None:
+        self._session("20260819-100000-1", phrases=8, kb=64, age_days=3)
+        self._session("20260819-110000-2", phrases=8, kb=64, age_days=2)
+        self._session("20260819-120000-3", phrases=8, kb=64, age_days=1)
+
+        result = sweep(DiagnosticsSettings(retention_days=0, max_total_mb=2), self.root)
+
+        cap = 2 * 1024 * 1024
+        self.assertLessEqual(result.total_bytes, int(cap * LOW_WATER_FRACTION))
+        self.assertFalse((self.root / "session-20260819-100000-1").exists())
+        self.assertTrue((self.root / "session-20260819-120000-3").exists())
+
+    def test_running_session_is_deleted_last(self) -> None:
+        finished = self._session("20260819-100000-1", phrases=8, kb=64, age_days=0.2)
+        current = self._session("20260819-120000-2", phrases=8, kb=64, age_days=0.1)
+
+        sweep(DiagnosticsSettings(retention_days=0, max_total_mb=1), self.root,
+              current_session=current)
+
+        self.assertFalse(finished.exists())
+        self.assertTrue(current.is_dir())
+
+    def test_a_lone_running_session_still_loses_its_oldest(self) -> None:
+        """The unattended case: one session, running for days, 2.7 GB a day."""
+        current = self._session("20260819-090000-1", phrases=16, kb=64, age_days=0.5)
+
+        result = sweep(DiagnosticsSettings(retention_days=0, max_total_mb=1), self.root,
+                       current_session=current)
+
+        self.assertLessEqual(result.total_bytes, int(1024 * 1024 * LOW_WATER_FRACTION))
+        self.assertTrue(current.is_dir())
+        self.assertTrue(any(current.iterdir()), "it should trim, not empty itself")
+
+    def test_zero_disables_a_limit(self) -> None:
+        self._session("20260101-120000-1", phrases=8, kb=64, age_days=400)
+
+        result = sweep(DiagnosticsSettings(retention_days=0, max_total_mb=0), self.root)
+
+        self.assertEqual(result.files_removed, 0)
+
+    def test_nothing_the_application_did_not_write_is_touched(self) -> None:
+        """Retention deletes from a directory the user may have chosen, so
+        deleting by everything-in-here would be a disaster."""
+        session = self._session("20260801-120000-1", age_days=99)
+        stranger = session / "my-notes.md"
+        stranger.write_text("keep me", encoding="utf-8")
+        loose = self.root / "holiday-photo.jpg"
+        loose.write_bytes(b"x" * 2048)
+
+        sweep(DiagnosticsSettings(retention_days=1, max_total_mb=1), self.root)
+
+        self.assertTrue(stranger.exists())
+        self.assertTrue(loose.exists())
+
+
+class CaptureLimitsTests(unittest.TestCase):
+    """Accounting must not re-walk the folder: a full one costs 1.8 seconds
+    here, half a phrase interval, which would make the recognition worker
+    overrun and drop speech."""
+
+    def setUp(self) -> None:
+        self._temp = TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.root = Path(self._temp.name) / "diagnostics"
+        self.session = self.root / "session-20260819-120000-1"
+        self.session.mkdir(parents=True)
+
+    def _write(self, limits, number: int, kb: int):
+        path = self.session / segment_audio_name(number)
+        path.write_bytes(b"x" * (kb * 1024))
+        return limits.record(path)
+
+    def test_writes_below_the_cap_do_not_touch_the_disk(self) -> None:
+        limits = CaptureLimits(DiagnosticsSettings(max_total_mb=1), self.root, self.session)
+
+        with patch("live_translator.diagnostics.sweep") as swept:
+            result = self._write(limits, 1, 64)
+
+        self.assertIsNone(result)
+        swept.assert_not_called()
+
+    def test_running_total_tracks_what_was_written(self) -> None:
+        limits = CaptureLimits(DiagnosticsSettings(max_total_mb=0), self.root, self.session)
+
+        self._write(limits, 1, 64)
+        self._write(limits, 2, 64)
+
+        self.assertEqual(limits.total_bytes, 128 * 1024)
+
+    def test_crossing_the_cap_triggers_one_cleanup(self) -> None:
+        limits = CaptureLimits(DiagnosticsSettings(retention_days=0, max_total_mb=1),
+                               self.root, self.session)
+
+        result = None
+        for number in range(1, 25):
+            result = self._write(limits, number, 64) or result
+
+        self.assertIsNotNone(result)
+        self.assertGreater(result.files_removed, 0)
+        self.assertLessEqual(limits.total_bytes, 1024 * 1024)
+
 
 
 if __name__ == "__main__":

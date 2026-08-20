@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Thread
 from time import perf_counter
 
 from live_translator.asr import AsrEngine, TranscriptResult, create_asr
@@ -11,10 +12,12 @@ from live_translator.audio.rolling import RollingSpeechChunker
 from live_translator.config import AppConfig
 from live_translator.diagnostics import (
     NOTE_SUFFIX,
+    CaptureLimits,
     capture_warning,
     resolve_capture_dir,
     segment_audio_name,
     session_directory_name,
+    sweep,
 )
 from live_translator.mt import TranslationEngine
 from live_translator.realtime import CapturedSegment, RealtimeMeetingWorkers
@@ -28,6 +31,7 @@ class LocalTranslatorPipeline:
         self._translator: TranslationEngine | None = None
         self._speaker: TtsSpeaker | None = None
         self._verbose = False
+        self._capture_limits: CaptureLimits | None = None
 
     def prepare(self, *, include_tts: bool = True) -> None:
         started = perf_counter()
@@ -127,6 +131,8 @@ class LocalTranslatorPipeline:
         debug_dir = self._start_diagnostics(
             diagnostics=diagnostics, debug_audio_dir=debug_audio_dir
         )
+        if debug_dir is None:
+            self._expire_old_diagnostics()
         chunker = (chunker_mode or self._config.chunking.mode).lower()
         if chunker in {"phrase", "speech"}:
             chunker = "vad"
@@ -361,7 +367,8 @@ class LocalTranslatorPipeline:
             return None
 
         try:
-            capture_dir = resolve_capture_dir(settings, debug_audio_dir) / session_directory_name()
+            root = resolve_capture_dir(settings, debug_audio_dir)
+            capture_dir = root / session_directory_name()
             capture_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             print(
@@ -370,14 +377,52 @@ class LocalTranslatorPipeline:
             )
             return None
 
-        print(capture_warning(capture_dir))
+        self._capture_limits = CaptureLimits(settings, root, capture_dir)
+        print(capture_warning(capture_dir, settings))
         return capture_dir
+
+    def _expire_old_diagnostics(self) -> None:
+        """Age out old captures even when this session captures nothing.
+
+        Someone who switches capture on once and never again would otherwise
+        keep that content forever. Runs off the main thread because a full
+        folder takes about 1.8 seconds to walk on this hardware, and nothing
+        should delay a meeting starting.
+        """
+        settings = self._config.diagnostics
+        if settings.retention_days <= 0:
+            return
+        try:
+            root = resolve_capture_dir(settings)
+        except ValueError:
+            return
+        if not root.is_dir():
+            return
+
+        Thread(
+            target=lambda: sweep(settings, root),
+            name="live-translator-diagnostics-sweep",
+            daemon=True,
+        ).start()
+
+    def _note_capture(self, path: Path | None) -> None:
+        """Account for a written artifact and report any cleanup it triggered."""
+        if self._capture_limits is None:
+            return
+        result = self._capture_limits.record(path)
+        if result:
+            print(
+                f"Diagnostics reached its {self._config.diagnostics.max_total_mb} MB limit: "
+                f"removed the {result.files_removed} oldest file(s), "
+                f"{result.bytes_freed / 1024 / 1024:.1f} MB freed."
+            )
 
     def _write_debug_audio(self, debug_dir: Path | None, segment_number: int, audio) -> Path | None:
         if debug_dir is None:
             return None
         path = debug_dir / segment_audio_name(segment_number)
         write_wav(path, audio, self._config.audio.sample_rate)
+        self._note_capture(path)
         return path
 
     def _write_debug_note(self, wav_path: Path | None, source: str, target: str) -> None:
@@ -396,6 +441,7 @@ class LocalTranslatorPipeline:
             ),
             encoding="utf-8",
         )
+        self._note_capture(note_path)
 
     def _print_audio_route(self) -> None:
         print("Audio routing:")
