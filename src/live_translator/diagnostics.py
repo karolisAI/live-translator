@@ -114,6 +114,7 @@ def capture_warning(directory: Path, settings: DiagnosticsSettings) -> str:
             f"  {SEGMENT_PREFIX}-NNNN{AUDIO_SUFFIX}   the recorded audio of each phrase",
             f"  {SEGMENT_PREFIX}-NNNN{NOTE_SUFFIX}   its transcript and its translation, in plain text",
             retention,
+            "  Delete them at any time with: live-translator purge-diagnostics",
             "",
         ]
     )
@@ -267,3 +268,64 @@ class CaptureLimits:
         result = sweep(self._settings, self._root, current_session=self._current_session)
         self._total = result.total_bytes
         return result
+
+@dataclass(frozen=True)
+class PurgeResult:
+    sessions_removed: int = 0
+    files_removed: int = 0
+    bytes_freed: int = 0
+
+
+class NotOurDirectory(ValueError):
+    """Raised when asked to purge a directory this application did not fill."""
+
+
+def purge(settings: DiagnosticsSettings, root: Path | None = None) -> PurgeResult:
+    """Remove every captured session, and nothing else.
+
+    A user can point diagnostics anywhere, so this cannot mean "empty the
+    directory". It deletes only what the naming rules say is ours, and refuses
+    outright when a non-empty directory contains none of our sessions, because
+    the likeliest reason is that someone pointed the setting at a folder of
+    their own.
+    """
+    root = root if root is not None else resolve_capture_dir(settings)
+    if not root.is_dir():
+        return PurgeResult()
+
+    sessions = [d for d in root.glob(f"{SESSION_PREFIX}-*") if d.is_dir()]
+    if not sessions and any(root.iterdir()):
+        raise NotOurDirectory(
+            f"{root} holds no captured sessions but is not empty. "
+            "Refusing to delete anything: check diagnostics.dir points where you think."
+        )
+
+    files_removed = bytes_freed = 0
+    for path in captured_files(root):
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if _remove(path):
+            files_removed += 1
+            bytes_freed += size
+
+    _remove_empty_sessions(root)
+    remaining = {d for d in root.glob(f"{SESSION_PREFIX}-*") if d.is_dir()}
+    return PurgeResult(
+        sessions_removed=len(sessions) - len(remaining),
+        files_removed=files_removed,
+        bytes_freed=bytes_freed,
+    )
+
+
+def describe_capture(root: Path) -> tuple[int, int]:
+    """How many captured files are in `root`, and how many bytes they take."""
+    total = 0
+    files = captured_files(root)
+    for path in files:
+        try:
+            total += path.stat().st_size
+        except OSError:
+            pass
+    return len(files), total

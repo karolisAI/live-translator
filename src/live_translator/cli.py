@@ -16,7 +16,13 @@ from live_translator.audio.devices import (
     resolve_device_index,
 )
 from live_translator.audio.io import _audio_packages, _select_sample_rate
-from live_translator.config import apply_cli_overrides, load_config
+from live_translator.diagnostics import (
+    NotOurDirectory,
+    describe_capture,
+    purge,
+    resolve_capture_dir,
+)
+from live_translator.config import AppConfig, apply_cli_overrides, load_config
 from live_translator.errors import MissingDependency
 from live_translator.mt import TranslationEngine
 from live_translator.mt.argos_packages import install_argos_package, print_installed_argos_packages
@@ -93,6 +99,14 @@ def build_parser() -> argparse.ArgumentParser:
     route.add_argument("--meeting-microphone-device", default=None, help="override audio.peer_input_device")
     route.add_argument("--seconds", type=float, default=1.0)
     route.set_defaults(func=cmd_route_test)
+
+    purge = subparsers.add_parser(
+        "purge-diagnostics", help="delete captured diagnostic audio and transcripts"
+    )
+    purge.add_argument("--profile", default="default", help="profile whose diagnostics path to use")
+    purge.add_argument("--config", default=None, help="explicit profile/config path")
+    purge.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    purge.set_defaults(func=cmd_purge_diagnostics)
 
     doctor = subparsers.add_parser("doctor", help="check local dependencies")
     doctor.add_argument(
@@ -228,6 +242,48 @@ def add_chunker_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--silence-ms", type=int, default=None, help="trailing silence before a VAD segment commits")
     parser.add_argument("--max-seconds", type=float, default=None, help="maximum VAD segment length")
+
+
+def cmd_purge_diagnostics(args: argparse.Namespace) -> int:
+    config_path = Path(args.config) if args.config else default_profile_path(args.profile)
+    config = load_config(config_path) if config_path.exists() else AppConfig()
+    settings = config.diagnostics
+
+    try:
+        root = resolve_capture_dir(settings)
+        files, total_bytes = describe_capture(root)
+        if files:
+            print(
+                f"About to delete {files} file(s), {total_bytes / 1024 / 1024:.1f} MB, from {root}"
+            )
+            print("This is captured meeting audio and its transcripts. It cannot be undone.")
+            if not args.yes and not _confirmed():
+                print("Nothing was deleted.")
+                return 1
+        result = purge(settings, root)
+    except NotOurDirectory as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    if not result.files_removed:
+        print(f"Nothing to remove: no captured sessions in {root}")
+        return 0
+
+    print(
+        f"Removed {result.files_removed} file(s) in {result.sessions_removed} session(s), "
+        f"{result.bytes_freed / 1024 / 1024:.1f} MB freed."
+    )
+    return 0
+
+
+def _confirmed() -> bool:
+    try:
+        return input("Delete them? [y/N] ").strip().lower() in {"y", "yes"}
+    except EOFError:
+        return False
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:

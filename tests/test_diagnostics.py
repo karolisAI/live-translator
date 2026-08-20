@@ -18,9 +18,11 @@ from unittest.mock import patch
 from live_translator.config import AppConfig, DiagnosticsSettings, load_config
 from live_translator.pipeline import LocalTranslatorPipeline
 from live_translator.diagnostics import (
+    NotOurDirectory,
     LOW_WATER_FRACTION,
     CaptureLimits,
     capture_warning,
+    purge,
     sweep,
     segment_note_name,
     session_directory_name,
@@ -379,6 +381,74 @@ class CaptureLimitsTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertGreater(result.files_removed, 0)
         self.assertLessEqual(limits.total_bytes, 1024 * 1024)
+
+
+class PurgeTests(unittest.TestCase):
+    """Covers the ticket test case: the purge action removes all supported
+    diagnostic artifacts. And the harder half, that it removes nothing else."""
+
+    def setUp(self) -> None:
+        self._temp = TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.root = Path(self._temp.name) / "diagnostics"
+        self.root.mkdir(parents=True)
+
+    def _session(self, name: str, phrases: int = 2) -> Path:
+        session = self.root / f"session-{name}"
+        session.mkdir(exist_ok=True)
+        for n in range(1, phrases + 1):
+            (session / segment_audio_name(n)).write_bytes(b"x" * 4096)
+            (session / segment_note_name(n)).write_text("source=x", encoding="utf-8")
+        return session
+
+    def test_purge_removes_every_captured_session(self) -> None:
+        self._session("20260819-100000-1")
+        self._session("20260820-090000-2", phrases=3)
+
+        result = purge(DiagnosticsSettings(), self.root)
+
+        self.assertEqual(result.sessions_removed, 2)
+        self.assertEqual(result.files_removed, 10)
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_purge_leaves_the_directory_itself(self) -> None:
+        """Removing it would only make the next capture recreate it."""
+        self._session("20260819-100000-1")
+
+        purge(DiagnosticsSettings(), self.root)
+
+        self.assertTrue(self.root.is_dir())
+
+    def test_purge_on_an_empty_directory_is_not_an_error(self) -> None:
+        result = purge(DiagnosticsSettings(), self.root)
+
+        self.assertEqual(result.files_removed, 0)
+
+    def test_purge_on_a_missing_directory_is_not_an_error(self) -> None:
+        result = purge(DiagnosticsSettings(), self.root / "never-created")
+
+        self.assertEqual(result.files_removed, 0)
+
+    def test_purge_refuses_a_directory_that_is_not_ours(self) -> None:
+        """diagnostics.dir can point anywhere, so a wrong value must not turn
+        purge into a recursive delete of somebody personal folder."""
+        (self.root / "tax-return.pdf").write_bytes(b"x" * 128)
+        (self.root / "photos").mkdir()
+
+        with self.assertRaises(NotOurDirectory):
+            purge(DiagnosticsSettings(), self.root)
+
+        self.assertTrue((self.root / "tax-return.pdf").exists())
+        self.assertTrue((self.root / "photos").is_dir())
+
+    def test_purge_keeps_strangers_that_sit_beside_our_sessions(self) -> None:
+        session = self._session("20260819-100000-1")
+        stranger = session / "my-notes.md"
+        stranger.write_text("keep me", encoding="utf-8")
+
+        purge(DiagnosticsSettings(), self.root)
+
+        self.assertTrue(stranger.exists(), "only our own filenames may be deleted")
 
 
 
