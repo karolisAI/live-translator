@@ -60,12 +60,17 @@ live-translator meeting --profile en-de
 
 Wait for `Ready`, then speak a short English phrase and pause. Confirm:
 
-- the terminal prints a plausible English transcript
-- the terminal prints a German translation
+- the terminal prints one line per phrase, such as
+  `Phrase   1    3.4s    ready in 1.9s`
 - the meeting microphone meter moves during Piper output
 - the remote participant hears only translated speech
 - the microphone remains active while the previous phrase is recognized and
   played; a second phrase spoken during playback is translated next
+
+Normal mode prints no transcript and no translation, so a confidential meeting
+leaves no content in the terminal or its scrollback. To check the text itself,
+repeat the run with `--verbose`, which prints the source phrase and its
+translation as before.
 
 End that meeting process with `Ctrl+C`, then test the reverse profile. This key
 combination ends the session only; capture and translation do not require a key
