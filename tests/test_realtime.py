@@ -2,6 +2,7 @@ import time
 import unittest
 from threading import Event
 
+from live_translator.errors import UntrustedRuntimePath
 from live_translator.realtime import CapturedSegment, RealtimeMeetingWorkers
 
 
@@ -184,6 +185,48 @@ class RealtimeMeetingWorkersTests(unittest.TestCase):
             workers.stop()
 
         self.assertIn("Continuous listening remains active", warnings[0])
+
+    def test_untrusted_executable_disables_playback_for_the_rest_of_the_meeting(self) -> None:
+        """An UntrustedRuntimePath is a security-relevant condition, not a
+        routine hiccup: it must be called out distinctly, and -- unlike an
+        ordinary playback failure -- must not be retried every phrase, since
+        a mistrusted path resolves the same way again on the next attempt."""
+        spoken: list[str] = []
+        warnings: list[str] = []
+
+        def process(segment: CapturedSegment) -> str:
+            return f"translation-{segment.number}"
+
+        def speak(text: str) -> None:
+            if text == "translation-1":
+                raise UntrustedRuntimePath("piper.exe resolved outside every approved root")
+            spoken.append(text)
+
+        workers = RealtimeMeetingWorkers(process, speak, on_warning=warnings.append)
+        workers.start()
+        try:
+            workers.submit("first")
+            wait_until(lambda: len(warnings) == 1)
+            self.assertFalse(workers.stop_event.is_set())
+
+            workers.submit("second")
+            workers.submit("third")
+            # stop() would discard whatever is still queued rather than wait
+            # for it to be processed, so wait for the playback queue to
+            # actually drain first -- otherwise "second"/"third" might never
+            # reach the skip branch at all, and the assertions below would
+            # pass for the wrong reason.
+            workers._playback.join()
+            workers.raise_if_failed()
+        finally:
+            workers.stop()
+
+        # Only the first phrase ever reached speak() with the untrusted path;
+        # the rest were skipped rather than retried or spoken.
+        self.assertEqual(spoken, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("SECURITY WARNING", warnings[0])
+        self.assertIn("disabled for the rest of this meeting", warnings[0])
 
 
 if __name__ == "__main__":
