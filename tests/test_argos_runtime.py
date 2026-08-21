@@ -4,10 +4,18 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from live_translator.mt import argos_runtime
 from live_translator.mt.argos_runtime import configure_argos_runtime, validate_override_dir
 
 
 class ConfigureArgosRuntimeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # _last_validated_packages_dir is module-level state that otherwise
+        # persists across tests (and across the whole test session) -- reset
+        # it so each test starts as if nothing had been validated yet,
+        # regardless of what an earlier test happened to validate.
+        argos_runtime._last_validated_packages_dir = None
+
     def test_skips_bundled_detection_when_already_set_to_a_valid_directory(self) -> None:
         with TemporaryDirectory() as already_set_dir:
             with (
@@ -49,6 +57,44 @@ class ConfigureArgosRuntimeTests(unittest.TestCase):
                 configure_argos_runtime()
 
                 self.assertEqual(os.environ["ARGOS_PACKAGES_DIR"], str(bundled))
+
+    def test_does_not_revalidate_the_same_value_on_a_later_call(self) -> None:
+        """Regression: this used to stat and print on every call once
+        ARGOS_PACKAGES_DIR was set -- once per phrase in a live meeting."""
+        with TemporaryDirectory() as already_set_dir:
+            with (
+                patch.dict(os.environ, {"ARGOS_PACKAGES_DIR": already_set_dir}),
+                patch(
+                    "live_translator.mt.argos_runtime.validate_override_dir",
+                    wraps=validate_override_dir,
+                ) as validate,
+            ):
+                configure_argos_runtime()
+                configure_argos_runtime()
+                configure_argos_runtime()
+
+                validate.assert_called_once_with("ARGOS_PACKAGES_DIR", already_set_dir)
+
+    def test_revalidates_when_the_value_changes(self) -> None:
+        """The cache is keyed by value, not a one-shot flag -- a genuinely
+        different ARGOS_PACKAGES_DIR must still be validated."""
+        with TemporaryDirectory() as first_dir, TemporaryDirectory() as second_dir:
+            with patch(
+                "live_translator.mt.argos_runtime.validate_override_dir",
+                wraps=validate_override_dir,
+            ) as validate:
+                with patch.dict(os.environ, {"ARGOS_PACKAGES_DIR": first_dir}):
+                    configure_argos_runtime()
+                with patch.dict(os.environ, {"ARGOS_PACKAGES_DIR": second_dir}):
+                    configure_argos_runtime()
+
+                self.assertEqual(
+                    validate.call_args_list,
+                    [
+                        unittest.mock.call("ARGOS_PACKAGES_DIR", first_dir),
+                        unittest.mock.call("ARGOS_PACKAGES_DIR", second_dir),
+                    ],
+                )
 
     def test_leaves_it_unset_when_the_bundled_default_is_missing(self) -> None:
         """The regression this guards: resolve_trusted_path raising
