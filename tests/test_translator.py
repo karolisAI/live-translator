@@ -80,6 +80,24 @@ class ArgosPackagePathTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "not an existing directory"):
                     _argos_package_path("en", "de")
 
+    def test_a_malformed_xdg_data_home_does_not_break_resolution_when_unused(self) -> None:
+        """Regression: XDG_DATA_HOME used to be validated eagerly, before the
+        search even checked whether an earlier candidate already resolved the
+        package -- so a merely-present-but-malformed value broke a setup that
+        was otherwise working. It must only be validated once the search
+        actually needs it."""
+        with TemporaryDirectory() as env_dir:
+            package_dir = Path(env_dir) / "en_de"
+            package_dir.mkdir()
+
+            env = dict(os.environ)
+            env["ARGOS_PACKAGES_DIR"] = env_dir
+            env["XDG_DATA_HOME"] = "relative/dir"  # would raise "absolute" if validated
+            with self._no_bundled_default(), patch.dict(os.environ, env, clear=True):
+                result = _argos_package_path("en", "de")
+
+            self.assertEqual(result, package_dir)
+
     def test_unset_xdg_data_home_uses_the_default_without_validation(self) -> None:
         """The ~/.local/share default is not an operator override -- it must
         not be validated or require existing, only an explicit value should."""

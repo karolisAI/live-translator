@@ -101,16 +101,25 @@ def _argos_package_path(source_language: str, target_language: str) -> Path:
         # (UntrustedRuntimePath), that's not a benign case and propagates.
         pass
 
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    # XDG_DATA_HOME is validated here, lazily, rather than folded into
+    # `candidates` above -- validating it eagerly would raise on a merely
+    # malformed, unused value even when an earlier candidate already resolved
+    # the package, turning an incidental env var into a hard failure for a
+    # setup that was otherwise working.
     xdg_env = os.getenv("XDG_DATA_HOME")
     if xdg_env:
         data_root = validate_override_dir("XDG_DATA_HOME", xdg_env)
     else:
         data_root = Path.home() / ".local" / "share"
-    candidates.append(data_root / "argos-translate" / "packages" / package_name)
+    xdg_candidate = data_root / "argos-translate" / "packages" / package_name
+    if xdg_candidate.exists():
+        return xdg_candidate
+    candidates.append(xdg_candidate)
 
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
     searched = ", ".join(str(candidate) for candidate in candidates)
     raise FileNotFoundError(
         f"Argos package not found for {source_language} -> {target_language}. "
