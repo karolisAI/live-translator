@@ -81,11 +81,13 @@ class PipelineTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(speaker.rendered, [])
 
-    def test_low_confidence_segment_is_translated_but_not_rendered(self) -> None:
-        """A flagged segment is still shown in full (see PrintTranslationTests)
-        and still translated -- only voicing it is skipped, since the
-        recognizer itself is telling us this one might be wrong and a wrong
-        sentence heard aloud costs more than one merely read."""
+    def test_low_confidence_segment_is_still_rendered(self) -> None:
+        """low_confidence is a transcript-only marker (see PrintTranslationTests),
+        not a TTS gate: on the 100-clip calibration set, most flagged EN
+        segments were near-misses rather than meaning-changing errors, and
+        avg_logprob doesn't separate the two cleanly enough to silence one
+        without also silencing the other -- so flagged segments are voiced
+        the same as any other accepted segment."""
         pipeline = LocalTranslatorPipeline(AppConfig())
         speaker = FakeSpeaker()
 
@@ -110,14 +112,14 @@ class PipelineTests(unittest.TestCase):
                 FakeSegment(), FakeTranslator(), speaker, None
             )
 
-        self.assertIsNone(result)
-        self.assertEqual(speaker.rendered, [])
+        self.assertIsInstance(result, RenderedSpeech)
+        self.assertEqual(speaker.rendered, ["target: unsicher"])
 
 
 class TranslateOnceTests(unittest.TestCase):
     """translate_once (the one-shot debug/testing command) follows the same
-    policy as the live path: a flagged transcript is still translated and
-    printed, just not spoken."""
+    policy as the live path: a flagged transcript is translated, printed,
+    and spoken exactly like any other accepted transcript."""
 
     def _run(self, *, low_confidence: bool) -> FakeSpeaker:
         pipeline = LocalTranslatorPipeline(AppConfig())
@@ -148,9 +150,9 @@ class TranslateOnceTests(unittest.TestCase):
         speaker = self._run(low_confidence=False)
         self.assertEqual(speaker.spoken, ["target: source"])
 
-    def test_does_not_speak_a_low_confidence_translation(self) -> None:
+    def test_speaks_a_low_confidence_translation_too(self) -> None:
         speaker = self._run(low_confidence=True)
-        self.assertEqual(speaker.spoken, [])
+        self.assertEqual(speaker.spoken, ["target: source"])
 
 
 class PrintTranslationTests(unittest.TestCase):
@@ -159,9 +161,9 @@ class PrintTranslationTests(unittest.TestCase):
 
     def test_marks_both_lines_when_flagged(self) -> None:
         """The marker used to appear on the source line only -- someone
-        reading just the target-language line, or only hearing it spoken (see
-        PipelineTests.test_low_confidence_segment_is_translated_but_not_rendered
-        for why it isn't spoken), would never see any warning at all."""
+        reading just the target-language line would never see any warning
+        at all, even though the segment is spoken and shown just like any
+        other (see PipelineTests.test_low_confidence_segment_is_still_rendered)."""
         pipeline = LocalTranslatorPipeline(AppConfig())
         buffer = io.StringIO()
 
@@ -171,8 +173,8 @@ class PrintTranslationTests(unittest.TestCase):
         lines = buffer.getvalue().splitlines()
         source_line = next(line for line in lines if "unsicherer Satz" in line)
         target_line = next(line for line in lines if "uncertain sentence" in line)
-        self.assertIn("[low confidence, not spoken]", source_line)
-        self.assertIn("[low confidence, not spoken]", target_line)
+        self.assertIn("[low confidence]", source_line)
+        self.assertIn("[low confidence]", target_line)
 
     def test_no_marker_when_not_flagged(self) -> None:
         pipeline = LocalTranslatorPipeline(AppConfig())

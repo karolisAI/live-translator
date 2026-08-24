@@ -87,7 +87,7 @@ class LocalTranslatorPipeline:
         mt_seconds = perf_counter() - mt_start
 
         tts_seconds = 0.0
-        if speaker is not None and translated and not result.low_confidence:
+        if speaker is not None and translated:
             tts_start = perf_counter()
             speaker.speak(translated)
             tts_seconds = perf_counter() - tts_start
@@ -224,13 +224,14 @@ class LocalTranslatorPipeline:
         self._write_debug_note(debug_wav, transcript.text, translated)
         self._print_asr_rejections(transcript)
         self._print_translation(transcript.text, translated, transcript.low_confidence)
-        # Flagged segments stay in the transcript but aren't voiced -- the
-        # recognizer itself is telling us this one might be wrong, and a
-        # wrong sentence heard aloud in a live meeting costs more than one
-        # merely read.
-        rendered = (
-            speaker.render(translated) if translated and not transcript.low_confidence else None
-        )
+        # low_confidence is a transcript-only signal, not a TTS gate: on the
+        # 100-clip calibration set, most flagged EN segments were near-misses
+        # (5 of 7 had WER under 0.19, often a single wrong word), not
+        # meaning-changing errors, and avg_logprob doesn't separate the two
+        # cleanly enough (r=-0.52 on English) to silence one without also
+        # silencing the other. Missing audio for a mostly-correct phrase is
+        # its own cost, not a free safety win.
+        rendered = speaker.render(translated) if translated else None
         if self._verbose:
             queue_seconds = max(0.0, started - segment.captured_at)
             print(
@@ -301,14 +302,13 @@ class LocalTranslatorPipeline:
     ) -> None:
         source = self._config.translation.source_language.upper()
         target = self._config.translation.target_language.upper()
-        # A flagged segment is not rejected -- it's still translated and shown
-        # in full, just marked as one the recognizer itself was uncertain
-        # about, favoring a visible-but-quiet marker over silently dropping
-        # possibly-correct content. See asr.flag_log_prob_threshold. It also
-        # isn't spoken (see _process_live_segment): a wrong sentence heard
-        # aloud is a bigger cost than one merely read, so the marker goes on
-        # both lines and says why, not just "uncertain".
-        marker = " [low confidence, not spoken]" if low_confidence else ""
+        # A flagged segment is not rejected -- it's still translated, shown,
+        # and spoken in full (see _process_live_segment), just marked as one
+        # the recognizer itself was uncertain about. On both lines, not just
+        # the source one: someone reading only the target-language line
+        # deserves the same warning as someone reading the source line. See
+        # asr.flag_log_prob_threshold.
+        marker = " [low confidence]" if low_confidence else ""
         print()
         print(f"{source}{marker}: {source_text}")
         print(f"{target}{marker}: {target_text}")
