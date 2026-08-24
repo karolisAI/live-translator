@@ -87,7 +87,7 @@ class LocalTranslatorPipeline:
         mt_seconds = perf_counter() - mt_start
 
         tts_seconds = 0.0
-        if speaker is not None and translated:
+        if speaker is not None and translated and not result.low_confidence:
             tts_start = perf_counter()
             speaker.speak(translated)
             tts_seconds = perf_counter() - tts_start
@@ -224,7 +224,13 @@ class LocalTranslatorPipeline:
         self._write_debug_note(debug_wav, transcript.text, translated)
         self._print_asr_rejections(transcript)
         self._print_translation(transcript.text, translated, transcript.low_confidence)
-        rendered = speaker.render(translated) if translated else None
+        # Flagged segments stay in the transcript but aren't voiced -- the
+        # recognizer itself is telling us this one might be wrong, and a
+        # wrong sentence heard aloud in a live meeting costs more than one
+        # merely read.
+        rendered = (
+            speaker.render(translated) if translated and not transcript.low_confidence else None
+        )
         if self._verbose:
             queue_seconds = max(0.0, started - segment.captured_at)
             print(
@@ -298,11 +304,14 @@ class LocalTranslatorPipeline:
         # A flagged segment is not rejected -- it's still translated and shown
         # in full, just marked as one the recognizer itself was uncertain
         # about, favoring a visible-but-quiet marker over silently dropping
-        # possibly-correct content. See asr.flag_log_prob_threshold.
-        marker = " [low confidence]" if low_confidence else ""
+        # possibly-correct content. See asr.flag_log_prob_threshold. It also
+        # isn't spoken (see _process_live_segment): a wrong sentence heard
+        # aloud is a bigger cost than one merely read, so the marker goes on
+        # both lines and says why, not just "uncertain".
+        marker = " [low confidence, not spoken]" if low_confidence else ""
         print()
         print(f"{source}{marker}: {source_text}")
-        print(f"{target}: {target_text}")
+        print(f"{target}{marker}: {target_text}")
 
     def _print_asr_rejections(self, result: TranscriptResult) -> None:
         if not self._verbose or not result.rejected_segments:
