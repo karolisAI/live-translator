@@ -295,6 +295,28 @@ delay, timing, and saved input chunks:
 live-translator meeting --profile en-de --verbose --debug-audio-dir debug-asr
 ```
 
+## Diagnostics
+
+Diagnostic capture is off unless explicitly enabled, with `--diagnostics` or
+`diagnostics.enabled: true` in a profile:
+
+```powershell
+live-translator meeting --profile en-de --diagnostics
+```
+
+Enabling it prints a warning naming what is captured. Each phrase writes a WAV
+recording and a text file with its transcript and translation, under
+`%LOCALAPPDATA%\LiveTranslator\diagnostics\<session>`. `--debug-audio-dir <path>`
+overrides the location and implies `--diagnostics`; a relative path is placed
+under that per-user folder rather than the working directory.
+
+Captures expire after 7 days or 500 MB, oldest first, both configurable under
+`diagnostics:` in the profile. Remove everything on demand:
+
+```powershell
+live-translator purge-diagnostics --profile en-de
+```
+
 ## When Something Does Not Work
 
 Check dependencies without touching a profile:
