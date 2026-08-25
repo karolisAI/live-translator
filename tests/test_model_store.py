@@ -128,6 +128,33 @@ class ModelDirTests(unittest.TestCase):
 
         self.assertEqual(from_elsewhere, model_dir(AsrSettings()))
 
+    def test_a_matching_model_dir_under_the_cwd_is_not_selected(self) -> None:
+        """A model folder that merely sits under wherever the shell was launched
+        must not stand in for the installation's prepared model.
+
+        `resolve_runtime_path` does consult the working directory, but returns a
+        cwd match as a *relative* path, which `model_dir` discards in favour of
+        the fixed `_preparation_root()` location. That makes the cwd-independence
+        emergent rather than explicit, so this pins it: if `resolve_runtime_path`
+        ever starts returning an absolute cwd match, this fails instead of
+        silently selecting the decoy.
+        """
+        import os
+
+        expected = model_dir(AsrSettings())
+        with TemporaryDirectory() as tmp:
+            decoy = Path(tmp) / ASR_MODEL_DIR
+            decoy.mkdir(parents=True)
+            original = os.getcwd()
+            try:
+                os.chdir(tmp)
+                selected = model_dir(AsrSettings())
+            finally:
+                os.chdir(original)
+
+        self.assertEqual(selected, expected)
+        self.assertNotEqual(selected.resolve(), decoy.resolve())
+
 
 class VerifyLocalModelTests(unittest.TestCase):
     def test_complete_directory_passes_without_network(self) -> None:
