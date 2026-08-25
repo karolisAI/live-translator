@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import yaml
 
+from live_translator.asr.model_store import recorded_revision
 from live_translator.cli import build_parser, cmd_prepare_models, main
 from live_translator.defaults import ASR_MODEL_REVISION
 from test_model_store import network_blocked, prepare_dir
@@ -141,6 +142,30 @@ class PrepareModelsCommandTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertIn("Already prepared", buffer.getvalue())
+
+    def test_re_downloads_when_the_prepared_revision_is_stale(self) -> None:
+        """After a build bumps the pinned revision, re-running preparation must
+        replace the out-of-date model rather than accept it: verify_local_model
+        rejects the old revision and prepare-models falls through to a download."""
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_dir = prepare_dir(root / "parakeet", revision="0" * 40)
+            profile = self.write_profile(root, model_dir)
+
+            def fake_download(repo_id, **kwargs):
+                prepare_dir(Path(kwargs["local_dir"]), revision=None)
+                return kwargs["local_dir"]
+
+            with patch("huggingface_hub.snapshot_download", side_effect=fake_download) as spy:
+                with redirect_stdout(io.StringIO()):
+                    code = cmd_prepare_models(
+                        build_parser().parse_args(["prepare-models", "--config", str(profile)])
+                    )
+
+            self.assertEqual(code, 0)
+            spy.assert_called_once()
+            self.assertEqual(spy.call_args.kwargs["revision"], ASR_MODEL_REVISION)
+            self.assertEqual(recorded_revision(model_dir), ASR_MODEL_REVISION)
 
     def test_meeting_on_an_unprepared_machine_reports_how_to_prepare(self) -> None:
         with TemporaryDirectory() as tmp:
