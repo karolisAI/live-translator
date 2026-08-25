@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from live_translator.config import AppConfig, RealtimeSettings
 from live_translator.asr.base import TranscriptResult
+from live_translator.errors import UntrustedRuntimePath
 from live_translator.pipeline import LocalTranslatorPipeline
 from live_translator.tts.speaker import RenderedSpeech
 
@@ -14,9 +15,12 @@ class FakeSpeaker:
         self.rendered: list[str] = []
         self.played: list[RenderedSpeech | None] = []
         self.spoken: list[str] = []
+        self.render_exception: Exception | None = None
 
     def render(self, text: str) -> RenderedSpeech:
         self.rendered.append(text)
+        if self.render_exception is not None:
+            raise self.render_exception
         return RenderedSpeech(text, samples=[0.0], sample_rate=16000)
 
     def play(self, rendered: RenderedSpeech | None) -> None:
@@ -114,6 +118,74 @@ class PipelineTests(unittest.TestCase):
 
         self.assertIsInstance(result, RenderedSpeech)
         self.assertEqual(speaker.rendered, ["target: unsicher"])
+
+    def test_untrusted_executable_disables_further_synthesis_for_the_session(self) -> None:
+        """Regression: this handling used to live in realtime.py's playback
+        loop, where UntrustedRuntimePath from Piper could never actually
+        reach it -- render() runs on the recognition worker (this method),
+        so an uncaught exception here was fatal to the whole meeting via
+        _recognition_loop's outer catch, instead of just disabling playback.
+        This exercises the real path: speaker.render() itself raising, not
+        a fake speak() standing in for it."""
+        pipeline = LocalTranslatorPipeline(AppConfig())
+        speaker = FakeSpeaker()
+        speaker.render_exception = UntrustedRuntimePath(
+            "piper.exe resolved outside every approved root"
+        )
+
+        class FakeTranslator:
+            def translate(self, text: str) -> str:
+                return f"target: {text}"
+
+        class FakeSegment:
+            number = 1
+            audio = [0.0] * 16000
+            captured_at = 0.0
+
+        transcript = TranscriptResult(
+            text="source", language="en", duration_seconds=1.0, inference_seconds=0.1
+        )
+        with patch.object(pipeline, "_transcribe_audio_if_safe", return_value=transcript):
+            first = pipeline._process_live_segment(FakeSegment(), FakeTranslator(), speaker, None)
+            second = pipeline._process_live_segment(FakeSegment(), FakeTranslator(), speaker, None)
+
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        # render() was attempted once (that's how the untrusted path was
+        # discovered) but never retried on the second phrase, since a
+        # mistrusted path resolves the same way again.
+        self.assertEqual(len(speaker.rendered), 1)
+
+    def test_a_synthesis_failure_skips_one_phrase_and_keeps_trying(self) -> None:
+        """Unlike UntrustedRuntimePath, a timeout or a corrupted binary can be
+        transient -- it must not permanently disable synthesis, just skip the
+        one phrase that hit it."""
+        pipeline = LocalTranslatorPipeline(AppConfig())
+        speaker = FakeSpeaker()
+        speaker.render_exception = RuntimeError(
+            "Piper (piper.exe) did not finish within 30s and was terminated."
+        )
+
+        class FakeTranslator:
+            def translate(self, text: str) -> str:
+                return f"target: {text}"
+
+        class FakeSegment:
+            number = 1
+            audio = [0.0] * 16000
+            captured_at = 0.0
+
+        transcript = TranscriptResult(
+            text="source", language="en", duration_seconds=1.0, inference_seconds=0.1
+        )
+        with patch.object(pipeline, "_transcribe_audio_if_safe", return_value=transcript):
+            first = pipeline._process_live_segment(FakeSegment(), FakeTranslator(), speaker, None)
+            speaker.render_exception = None
+            second = pipeline._process_live_segment(FakeSegment(), FakeTranslator(), speaker, None)
+
+        self.assertIsNone(first)
+        self.assertIsInstance(second, RenderedSpeech)
+        self.assertEqual(len(speaker.rendered), 2)
 
 
 class TranslateOnceTests(unittest.TestCase):

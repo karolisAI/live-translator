@@ -6,8 +6,6 @@ from threading import Event, Thread
 from time import perf_counter
 from typing import Any, Callable
 
-from live_translator.errors import UntrustedRuntimePath
-
 
 @dataclass(frozen=True)
 class CapturedSegment:
@@ -48,13 +46,6 @@ class RealtimeMeetingWorkers:
         self._failures: Queue[_WorkerFailure] = Queue()
         self._next_number = 1
         self._started = False
-        self._tts_disabled_reason: str | None = None
-        """Set once, from the playback thread only, on UntrustedRuntimePath.
-
-        Not a lock-protected flag: only `_playback_loop` ever writes it, and
-        only `_playback_loop` reads it, so this is safe as long as playback
-        stays single-threaded. It would need a lock if that ever changes.
-        """
         self._recognition_thread = Thread(
             target=self._recognition_loop,
             name="live-translator-recognition",
@@ -138,23 +129,8 @@ class RealtimeMeetingWorkers:
                     if item is _STOP:
                         return
                     _number, text = item
-                    if self._tts_disabled_reason is not None:
-                        # Already warned once below; a mistrusted executable
-                        # will resolve the same way again, so retrying every
-                        # phrase would only repeat the same failure -- and
-                        # printing about it every phrase would recreate the
-                        # exact per-phrase spam this is meant to avoid.
-                        continue
                     try:
                         self._speak(text)
-                    except UntrustedRuntimePath as exc:
-                        self._tts_disabled_reason = str(exc)
-                        self._on_warning(
-                            f"SECURITY WARNING: phrase {_number} tried to run a speech "
-                            f"executable outside every trusted location ({exc}). Spoken "
-                            f"playback is disabled for the rest of this meeting; "
-                            f"transcription and translation continue normally."
-                        )
                     except Exception as exc:
                         self._on_warning(
                             f"Warning: translated speech playback failed for phrase {_number}: "
