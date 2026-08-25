@@ -60,6 +60,18 @@ class DevRuntimeRootTests(unittest.TestCase):
                 result = dev_runtime_root()
             self.assertEqual(result, Path(dev_dir).resolve())
 
+    def test_never_honored_in_a_frozen_build(self) -> None:
+        """The whole point of restricting this: a real installed build must
+        never trust a directory just because the env var happened to be set
+        in its environment, for example left over from an earlier test
+        session on a shared machine."""
+        with TemporaryDirectory() as dev_dir:
+            with (
+                patch.dict(os.environ, {"LIVE_TRANSLATOR_DEV_RUNTIME_ROOT": dev_dir}),
+                patch("sys.frozen", True, create=True),
+            ):
+                self.assertIsNone(dev_runtime_root())
+
     def test_resolve_trusted_path_only_honors_it_once_explicitly_set(self) -> None:
         """The actual point of the override: a path outside every other
         approved root is untrusted before it's set, resolvable after --

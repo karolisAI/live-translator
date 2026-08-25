@@ -146,7 +146,9 @@ launch the app from an arbitrary directory, or place a file in one already on
 that list, could otherwise get an untrusted file resolved and, for Piper,
 run. A local development override (`LIVE_TRANSLATOR_DEV_RUNTIME_ROOT`) exists
 to unblock testing a build from somewhere else, but is never active unless
-explicitly set, and is not a supported deployment configuration.
+explicitly set, and never honored in a frozen build regardless of whether
+the variable is set, so it structurally cannot widen trust for a real
+installed app.
 
 Argos packages additionally check `ARGOS_PACKAGES_DIR` and the normal
 per-user Argos data directory (`XDG_DATA_HOME`, or `~/.local/share`) ahead of

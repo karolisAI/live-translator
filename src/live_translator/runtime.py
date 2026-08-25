@@ -28,22 +28,30 @@ def default_profile_path(profile_name: str = "default") -> Path:
 
 def dev_runtime_root() -> Path | None:
     """Explicit, opt-in override for local development. `None` unless a
-    developer deliberately sets LIVE_TRANSLATOR_DEV_RUNTIME_ROOT -- never
+    developer deliberately sets LIVE_TRANSLATOR_DEV_RUNTIME_ROOT, never
     active by default, and never silently.
 
     Separate in purpose from the production-facing overrides in
-    mt/translator.py (ARGOS_PACKAGES_DIR, XDG_DATA_HOME): those exist so an
+    mt/translator.py (ARGOS_PACKAGES_DIR, XDG_DATA_HOME). Those exist so an
     operator can point at a real external package location and stay
-    supported. This one exists only to unblock a developer testing a local
-    build from somewhere approved_runtime_roots() wouldn't otherwise trust,
-    and is never meant to be set in a real deployment.
+    supported. This one exists only to unblock a developer running from
+    source and testing against a build somewhere approved_runtime_roots()
+    wouldn't otherwise trust.
+
+    Never honored in a frozen build (see the check below), so it structurally
+    cannot widen trust for a real installed app even if the variable is set
+    in its environment, for example left over from an earlier test session
+    on a shared machine. A frozen build already trusts its own directory
+    unconditionally, so it never needed this override in the first place.
     """
+    if getattr(sys, "frozen", False):
+        return None
     value = os.environ.get(_DEV_RUNTIME_ROOT_ENV)
     if not value:
         return None
     root = Path(value).resolve()
     print(
-        f"WARNING: {_DEV_RUNTIME_ROOT_ENV} is set -- trusting runtime "
+        f"WARNING: {_DEV_RUNTIME_ROOT_ENV} is set, trusting runtime "
         f"executables and assets from {root}. This must never be set outside "
         f"local development."
     )
