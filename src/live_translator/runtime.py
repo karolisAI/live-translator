@@ -10,6 +10,15 @@ APP_NAME = "LiveTranslator"
 
 _DEV_RUNTIME_ROOT_ENV = "LIVE_TRANSLATOR_DEV_RUNTIME_ROOT"
 
+_approved_roots_cache: list[Path] | None = None
+"""Cache for approved_runtime_roots(). Piper's render() alone resolves two
+paths (exe + model) per phrase, so without this a live meeting rebuilds the
+roots list -- including the dev-root env lookup and its warning print --
+twice per phrase for the whole meeting. The inputs (sys.frozen, _MEIPASS,
+__file__, the dev-root env var) don't change once a process is running, so
+computing this once is safe in production. Tests that vary those inputs
+reset this explicitly -- see test_runtime.py's _reset_roots_cache()."""
+
 
 def user_data_dir() -> Path:
     root = os.environ.get("LOCALAPPDATA")
@@ -79,7 +88,13 @@ def approved_runtime_roots() -> list[Path]:
     would need re-review if packaging ever changes: _MEIPASS carrying the
     actual trust-bearing role here, not just belt-and-suspenders alongside
     sys.executable's parent.
+
+    Computed once per process and cached -- see _approved_roots_cache.
     """
+    global _approved_roots_cache
+    if _approved_roots_cache is not None:
+        return _approved_roots_cache
+
     roots: list[Path] = []
     if getattr(sys, "frozen", False):
         roots.append(Path(sys.executable).resolve().parent)
@@ -96,6 +111,7 @@ def approved_runtime_roots() -> list[Path]:
     for root in roots:
         if root not in unique:
             unique.append(root)
+    _approved_roots_cache = unique
     return unique
 
 

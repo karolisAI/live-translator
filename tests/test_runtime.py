@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from live_translator import runtime
 from live_translator.errors import UntrustedRuntimePath
 from live_translator.runtime import (
     approved_runtime_roots,
@@ -12,10 +13,20 @@ from live_translator.runtime import (
 )
 
 
+def _reset_roots_cache() -> None:
+    """approved_runtime_roots() caches its result for the life of the
+    process (see runtime.py); tests that vary sys.frozen/_MEIPASS/the
+    dev-root env var need a fresh computation each time, not the cache."""
+    runtime._approved_roots_cache = None
+
+
 class ApprovedRuntimeRootsTests(unittest.TestCase):
     """The current working directory must never appear here -- that's the
     entire point of this module. Everything else (frozen exe dir, bundle
     dir, dev override) is additive on top of the package root."""
+
+    def setUp(self) -> None:
+        _reset_roots_cache()
 
     def test_cwd_is_never_included(self) -> None:
         with TemporaryDirectory() as cwd_dir:
@@ -43,10 +54,29 @@ class ApprovedRuntimeRootsTests(unittest.TestCase):
                 roots = approved_runtime_roots()
             self.assertIn(Path(bundle_dir).resolve(), roots)
 
+    def test_computed_once_and_cached(self) -> None:
+        """Regression: this used to rebuild the roots list (and, if
+        LIVE_TRANSLATOR_DEV_RUNTIME_ROOT was set, re-print its warning) on
+        every call -- twice a phrase, since render() resolves both the Piper
+        exe and the model."""
+        with TemporaryDirectory() as dev_dir:
+            with (
+                patch.dict(os.environ, {"LIVE_TRANSLATOR_DEV_RUNTIME_ROOT": dev_dir}),
+                patch("builtins.print") as mock_print,
+            ):
+                first = approved_runtime_roots()
+                second = approved_runtime_roots()
+
+            self.assertEqual(first, second)
+            mock_print.assert_called_once()
+
 
 class DevRuntimeRootTests(unittest.TestCase):
     """LIVE_TRANSLATOR_DEV_RUNTIME_ROOT exists to unblock local development,
     never active unless a developer deliberately sets it."""
+
+    def setUp(self) -> None:
+        _reset_roots_cache()
 
     def test_unset_by_default(self) -> None:
         env = dict(os.environ)
@@ -86,6 +116,11 @@ class DevRuntimeRootTests(unittest.TestCase):
                 with self.assertRaises(UntrustedRuntimePath):
                     resolve_trusted_path(target)
 
+            # The cache is real and process-lifetime, so the env change above
+            # needs a fresh computation to actually take effect -- otherwise
+            # this call would see the same (dev-root-less) roots the first
+            # call cached, and wrongly raise again.
+            _reset_roots_cache()
             with patch.dict(os.environ, {**env, "LIVE_TRANSLATOR_DEV_RUNTIME_ROOT": dev_dir}):
                 result = resolve_trusted_path(target)
             self.assertEqual(result, target.resolve())

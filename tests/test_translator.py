@@ -4,7 +4,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from live_translator.mt.translator import _argos_package_path
+from live_translator.mt import translator
+from live_translator.mt.translator import _argos_package_path, validate_override_dir
 
 
 class ArgosPackagePathTests(unittest.TestCase):
@@ -12,6 +13,13 @@ class ArgosPackagePathTests(unittest.TestCase):
     (kept deliberately, unlike the bundled-default path's dev-only escape
     hatch) -- what matters here is that a missing bundled-default candidate
     falls through to them rather than aborting the whole search."""
+
+    def setUp(self) -> None:
+        # _last_validated_xdg_data_home is module-level state that otherwise
+        # persists across tests -- reset it so each test starts as if
+        # nothing had been validated yet, regardless of what an earlier
+        # test happened to validate.
+        translator._last_validated_xdg_data_home = None
 
     def _no_bundled_default(self):
         """Guarantee the bundled-default candidate never matches, regardless
@@ -97,6 +105,65 @@ class ArgosPackagePathTests(unittest.TestCase):
                 result = _argos_package_path("en", "de")
 
             self.assertEqual(result, package_dir)
+
+    def test_does_not_revalidate_the_same_xdg_data_home_on_a_later_call(self) -> None:
+        """Regression: this used to stat and print XDG_DATA_HOME on every
+        call -- once per phrase in a live meeting, same as the
+        ARGOS_PACKAGES_DIR spam this PR already fixed elsewhere. The package
+        has to actually resolve under XDG (not ARGOS_PACKAGES_DIR) each call,
+        otherwise the search returns before ever reaching XDG validation."""
+        with TemporaryDirectory() as env_dir, TemporaryDirectory() as xdg_dir:
+            xdg_package = Path(xdg_dir) / "argos-translate" / "packages" / "en_de"
+            xdg_package.mkdir(parents=True)
+
+            with (
+                self._no_bundled_default(),
+                patch.dict(
+                    os.environ, {"ARGOS_PACKAGES_DIR": env_dir, "XDG_DATA_HOME": xdg_dir}
+                ),
+                patch(
+                    "live_translator.mt.translator.validate_override_dir",
+                    wraps=validate_override_dir,
+                ) as validate,
+            ):
+                _argos_package_path("en", "de")
+                _argos_package_path("en", "de")
+                _argos_package_path("en", "de")
+
+            validate.assert_called_once_with("XDG_DATA_HOME", xdg_dir)
+
+    def test_revalidates_when_xdg_data_home_changes(self) -> None:
+        with (
+            TemporaryDirectory() as env_dir,
+            TemporaryDirectory() as first_xdg,
+            TemporaryDirectory() as second_xdg,
+        ):
+            Path(first_xdg, "argos-translate", "packages", "en_de").mkdir(parents=True)
+            Path(second_xdg, "argos-translate", "packages", "en_de").mkdir(parents=True)
+
+            with (
+                self._no_bundled_default(),
+                patch(
+                    "live_translator.mt.translator.validate_override_dir",
+                    wraps=validate_override_dir,
+                ) as validate,
+            ):
+                with patch.dict(
+                    os.environ, {"ARGOS_PACKAGES_DIR": env_dir, "XDG_DATA_HOME": first_xdg}
+                ):
+                    _argos_package_path("en", "de")
+                with patch.dict(
+                    os.environ, {"ARGOS_PACKAGES_DIR": env_dir, "XDG_DATA_HOME": second_xdg}
+                ):
+                    _argos_package_path("en", "de")
+
+            self.assertEqual(
+                validate.call_args_list,
+                [
+                    unittest.mock.call("XDG_DATA_HOME", first_xdg),
+                    unittest.mock.call("XDG_DATA_HOME", second_xdg),
+                ],
+            )
 
     def test_unset_xdg_data_home_uses_the_default_without_validation(self) -> None:
         """The ~/.local/share default is not an operator override -- it must

@@ -10,6 +10,13 @@ from live_translator.errors import MissingDependency
 from live_translator.mt.argos_runtime import configure_argos_runtime, validate_override_dir
 from live_translator.runtime import resolve_trusted_path
 
+_last_validated_xdg_data_home: str | None = None
+"""Cache for _argos_package_path()'s XDG_DATA_HOME check, same reasoning as
+argos_runtime's ARGOS_PACKAGES_DIR cache: this runs once per translated
+phrase, so without it a live meeting re-stats and re-prints the override on
+every phrase for the whole session, not just once. Keyed by value, not a
+one-shot flag, so a value that changes still gets validated."""
+
 
 class TranslationEngine:
     def __init__(self, settings: TranslationSettings) -> None:
@@ -82,6 +89,7 @@ class TranslationEngine:
 
 
 def _argos_package_path(source_language: str, target_language: str) -> Path:
+    global _last_validated_xdg_data_home
     package_name = f"{source_language}_{target_language}"
     candidates = []
 
@@ -112,7 +120,10 @@ def _argos_package_path(source_language: str, target_language: str) -> Path:
     # setup that was otherwise working.
     xdg_env = os.getenv("XDG_DATA_HOME")
     if xdg_env:
-        data_root = validate_override_dir("XDG_DATA_HOME", xdg_env)
+        if xdg_env != _last_validated_xdg_data_home:
+            validate_override_dir("XDG_DATA_HOME", xdg_env)
+            _last_validated_xdg_data_home = xdg_env
+        data_root = Path(xdg_env)
     else:
         data_root = Path.home() / ".local" / "share"
     xdg_candidate = data_root / "argos-translate" / "packages" / package_name
