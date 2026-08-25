@@ -206,6 +206,16 @@ class CaptureActivationTests(unittest.TestCase):
         self.assertIn("could not start", output)
         self.assertIn("meeting is not affected", output)
 
+    def test_a_path_climbing_out_with_dotdot_does_not_end_the_meeting_either(self) -> None:
+        """resolve_capture_dir refuses this with ValueError, not OSError --
+        this used to be a different exception type than the one caught above,
+        so it crashed loopback() instead of degrading the same way."""
+        result, output = self._start(diagnostics=True, debug_audio_dir="../../../Desktop")
+
+        self.assertIsNone(result)
+        self.assertIn("could not start", output)
+        self.assertIn("meeting is not affected", output)
+
     def test_two_sessions_do_not_share_a_directory(self) -> None:
         """Phrase numbers restart at 1, so a shared directory means the
         second meeting overwrites the first one's transcripts.

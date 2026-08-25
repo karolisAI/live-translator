@@ -375,9 +375,11 @@ class LocalTranslatorPipeline:
         explicit path, which implies the flag so existing habits keep working.
         Returning None is what makes a normal meeting write nothing at all --
         the directory is not created, so there is no empty folder implying
-        something was recorded. A directory that cannot be created returns
-        None too: on a locked-down machine, losing diagnostics is an
-        inconvenience and losing the meeting is not.
+        something was recorded. A directory that cannot be created, or a path
+        resolve_capture_dir refuses (e.g. a relative path that climbs outside
+        the per-user directory with `..`), returns None too: on a locked-down
+        machine, losing diagnostics is an inconvenience and losing the meeting
+        is not.
         """
         settings = self._config.diagnostics
         if not (diagnostics or settings.enabled or debug_audio_dir):
@@ -387,7 +389,7 @@ class LocalTranslatorPipeline:
             root = resolve_capture_dir(settings, debug_audio_dir)
             capture_dir = root / session_directory_name()
             capture_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             print(
                 f"Diagnostic capture could not start: {exc}. "
                 "Continuing without it; the meeting is not affected."
