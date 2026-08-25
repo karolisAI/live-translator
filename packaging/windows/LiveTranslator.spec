@@ -13,7 +13,8 @@ hiddenimports = []
 
 for package in [
     "ctranslate2",
-    "faster_whisper",
+    "onnx_asr",
+    "onnxruntime",
     "sentencepiece",
 ]:
     try:

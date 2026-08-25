@@ -3,8 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from time import perf_counter
 
-from live_translator.asr import FasterWhisperAsr
-from live_translator.asr.faster_whisper_engine import TranscriptResult
+from live_translator.asr import AsrEngine, TranscriptResult, create_asr
 from live_translator.audio.analysis import analyze_audio, has_enough_audio_energy
 from live_translator.audio.devices import describe_device_selection
 from live_translator.audio.io import play_mono, record_mono, write_wav
@@ -12,13 +11,13 @@ from live_translator.audio.rolling import RollingSpeechChunker
 from live_translator.config import AppConfig
 from live_translator.mt import TranslationEngine
 from live_translator.realtime import CapturedSegment, RealtimeMeetingWorkers
-from live_translator.tts import TtsSpeaker
+from live_translator.tts import RenderedSpeech, TtsSpeaker
 
 
 class LocalTranslatorPipeline:
     def __init__(self, config: AppConfig) -> None:
         self._config = config
-        self._asr: FasterWhisperAsr | None = None
+        self._asr: AsrEngine | None = None
         self._translator: TranslationEngine | None = None
         self._speaker: TtsSpeaker | None = None
         self._verbose = False
@@ -34,7 +33,9 @@ class LocalTranslatorPipeline:
         self._get_translator().prepare()
         if include_tts:
             print(f"  Speech output: {self._config.tts.engine}")
-            self._get_speaker().validate()
+            speaker = self._get_speaker()
+            speaker.validate()
+            speaker.warm_up()
         print(f"Ready in {perf_counter() - started:.1f}s.")
 
     def record_test(self, output_path: str | Path, seconds: float | None = None, play: bool = False) -> None:
@@ -179,9 +180,9 @@ class LocalTranslatorPipeline:
         if interrupted:
             print("Meeting translation ended.")
 
-    def _get_asr(self) -> FasterWhisperAsr:
+    def _get_asr(self) -> AsrEngine:
         if self._asr is None:
-            self._asr = FasterWhisperAsr(self._config.asr)
+            self._asr = create_asr(self._config.asr)
         return self._asr
 
     def _get_translator(self) -> TranslationEngine:
@@ -198,8 +199,18 @@ class LocalTranslatorPipeline:
         self,
         segment: CapturedSegment,
         translator: TranslationEngine,
+        speaker: TtsSpeaker,
         debug_dir: Path | None,
-    ) -> str | None:
+    ) -> RenderedSpeech | None:
+        """Recognize, translate, and synthesize one phrase.
+
+        Synthesis happens here rather than in the playback worker so that the two
+        overlap: this worker renders the next phrase while the previous one is
+        still being spoken. It has the room. Measured 2026-08-18, the playback
+        worker was busy 4.01s per phrase while phrases arrived every 3.52s, so it
+        fell behind on every one and its queue discarded a fifth of them, while
+        this worker sat idle for most of the same interval.
+        """
         started = perf_counter()
         debug_wav = self._write_debug_audio(debug_dir, segment.number, segment.audio)
         transcript = self._transcribe_audio_if_safe(segment.audio)
@@ -212,14 +223,15 @@ class LocalTranslatorPipeline:
         translated = translator.translate(transcript.text)
         self._write_debug_note(debug_wav, transcript.text, translated)
         self._print_asr_rejections(transcript)
-        self._print_translation(transcript.text, translated)
+        self._print_translation(transcript.text, translated, transcript.low_confidence)
+        rendered = speaker.render(translated) if translated else None
         if self._verbose:
             queue_seconds = max(0.0, started - segment.captured_at)
             print(
                 f"Segment {segment.number}: queue={queue_seconds:.2f}s "
-                f"recognition+translation={perf_counter() - started:.2f}s"
+                f"recognition+translation+synthesis={perf_counter() - started:.2f}s"
             )
-        return translated or None
+        return rendered
 
     def _create_realtime_workers(
         self,
@@ -228,8 +240,8 @@ class LocalTranslatorPipeline:
         debug_dir: Path | None,
     ) -> RealtimeMeetingWorkers:
         return RealtimeMeetingWorkers(
-            lambda segment: self._process_live_segment(segment, translator, debug_dir),
-            speaker.speak,
+            lambda segment: self._process_live_segment(segment, translator, speaker, debug_dir),
+            speaker.play,
             segment_queue_size=self._config.realtime.recognition_queue_size,
             playback_queue_size=self._config.realtime.playback_queue_size,
         )
@@ -278,11 +290,18 @@ class LocalTranslatorPipeline:
             )
         return False
 
-    def _print_translation(self, source_text: str, target_text: str) -> None:
+    def _print_translation(
+        self, source_text: str, target_text: str, low_confidence: bool = False
+    ) -> None:
         source = self._config.translation.source_language.upper()
         target = self._config.translation.target_language.upper()
+        # A flagged segment is not rejected -- it's still translated and shown
+        # in full, just marked as one the recognizer itself was uncertain
+        # about, favoring a visible-but-quiet marker over silently dropping
+        # possibly-correct content. See asr.flag_log_prob_threshold.
+        marker = " [low confidence]" if low_confidence else ""
         print()
-        print(f"{source}: {source_text}")
+        print(f"{source}{marker}: {source_text}")
         print(f"{target}: {target_text}")
 
     def _print_asr_rejections(self, result: TranscriptResult) -> None:

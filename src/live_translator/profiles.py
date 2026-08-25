@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from live_translator.audio.devices import AudioDevice, list_devices
+from live_translator.defaults import DEFAULT_ASR_ENGINE, DEFAULT_ASR_MODEL
 from live_translator.errors import MissingDependency
 from live_translator.runtime import default_profile_path
 
@@ -50,15 +51,12 @@ def write_meeting_profile(
             "playback_gain": 0.7,
         },
         "asr": {
-            "engine": "faster-whisper",
-            "model": "base",
+            "engine": DEFAULT_ASR_ENGINE,
+            "model": DEFAULT_ASR_MODEL,
             "device": "cpu",
             "compute_type": "int8",
             "cpu_threads": 8,
             "source_language": settings["asr_language"],
-            "beam_size": 1,
-            "condition_on_previous_text": False,
-            "no_speech_threshold": 0.75,
             "log_prob_threshold": -1.3,
             "compression_ratio_threshold": 2.4,
             "min_segment_chars": 2,

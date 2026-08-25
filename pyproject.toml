@@ -10,8 +10,10 @@ requires-python = ">=3.11"
 dependencies = [
     "av>=11,<19",
     "ctranslate2>=4,<5",
-    "faster-whisper>=1.0,<2",
+    "huggingface_hub>=1,<2",
     "numpy>=1.26,<3",
+    "onnx-asr>=0.12,<1",
+    "onnxruntime>=1.20,<2",
     "PyYAML>=6,<7",
     "sentencepiece>=0.2,<1",
     "sounddevice>=0.4,<1",
@@ -21,7 +23,11 @@ dependencies = [
 translate = ["argostranslate>=1.9,<2"]
 tts = ["pyttsx3>=2.90,<3"]
 build = ["pyinstaller>=6,<7"]
-all = ["argostranslate>=1.9,<2", "pyttsx3>=2.90,<3", "pyinstaller>=6,<7"]
+all = [
+    "argostranslate>=1.9,<2",
+    "pyttsx3>=2.90,<3",
+    "pyinstaller>=6,<7",
+]
 
 [project.scripts]
 live-translator = "live_translator.cli:main"

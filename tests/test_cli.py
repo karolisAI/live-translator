@@ -36,8 +36,6 @@ class CliTests(unittest.TestCase):
                 "en-de",
                 "--chunker",
                 "vad",
-                "--no-speech-threshold",
-                "0.88",
                 "--log-prob-threshold",
                 "-1.7",
                 "--input-gain",
@@ -58,7 +56,6 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(args.chunker, "vad")
-        self.assertEqual(args.no_speech_threshold, 0.88)
         self.assertEqual(args.log_prob_threshold, -1.7)
         self.assertEqual(args.input_gain, 1.8)
         self.assertEqual(args.debug_audio_dir, "debug-audio")

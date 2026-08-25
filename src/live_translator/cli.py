@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from live_translator.asr import FasterWhisperAsr
+from live_translator.asr import SUPPORTED_ASR_ENGINES, create_asr
 from live_translator.audio.route_test import test_output_to_input_route
 from live_translator.audio.devices import (
     DeviceRole,
@@ -70,7 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
     meeting.add_argument("--profile", default="default", help="profile name to load")
     meeting.add_argument("--config", default=None, help="explicit profile/config path")
     meeting.add_argument("--seconds", type=float, default=None, help="override fixed-mode chunk duration")
-    meeting.add_argument("--model", default=None, help="faster-whisper model name or local model path")
+    meeting.add_argument("--asr-engine", default=None, choices=SUPPORTED_ASR_ENGINES, help="override the ASR engine")
+    meeting.add_argument("--model", default=None, help="ASR model name or local model path")
     meeting.add_argument("--input-gain", type=float, default=None, help="multiply microphone samples before ASR")
     meeting.add_argument("--debug-audio-dir", default=None, help="write each ASR input chunk as a WAV file")
     meeting.add_argument("--verbose", action="store_true", help="show audio gates and per-segment timings")
@@ -85,11 +86,17 @@ def build_parser() -> argparse.ArgumentParser:
     route.set_defaults(func=cmd_route_test)
 
     doctor = subparsers.add_parser("doctor", help="check local dependencies")
+    doctor.add_argument(
+        "--profile",
+        default=None,
+        help="profile name to validate; omit to check dependencies only",
+    )
     doctor.add_argument("--config", default=None, help="also validate config-specific settings")
     doctor.add_argument(
         "--prepare-models",
         action="store_true",
-        help="load the configured ASR and translation models now",
+        help="also load the profile's speech model; translation and voice are "
+        "checked by any profile validation",
     )
     doctor.set_defaults(func=cmd_doctor)
 
@@ -165,7 +172,8 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input-device", default=None, help="input device full or partial friendly name")
     parser.add_argument("--output-device", default=None, help="output device full or partial friendly name")
     parser.add_argument("--input-gain", type=float, default=None, help="multiply microphone samples before ASR")
-    parser.add_argument("--model", default=None, help="faster-whisper model name or local model path")
+    parser.add_argument("--asr-engine", default=None, choices=SUPPORTED_ASR_ENGINES, help="override the ASR engine")
+    parser.add_argument("--model", default=None, help="ASR model name or local model path")
 
 
 def add_language_options(parser: argparse.ArgumentParser) -> None:
@@ -188,8 +196,8 @@ def add_tts_options(parser: argparse.ArgumentParser) -> None:
 
 def add_chunker_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--chunker", choices=CHUNKER_MODES, default=None, help="fixed windows or VAD speech segments")
-    parser.add_argument("--no-speech-threshold", type=float, default=None, help="Whisper no-speech rejection threshold")
-    parser.add_argument("--log-prob-threshold", type=float, default=None, help="Whisper average log-probability rejection threshold")
+    parser.add_argument("--log-prob-threshold", type=float, default=None, help="average per-token log-probability below which a phrase is rejected")
+    parser.add_argument("--flag-log-prob-threshold", type=float, default=None, help="average per-token log-probability below which an accepted phrase is flagged low_confidence instead of rejected; must be greater than --log-prob-threshold")
     parser.add_argument("--vad-threshold", type=float, default=None, help="RMS threshold for --chunker vad")
     parser.add_argument("--peak-threshold", type=float, default=None, help="minimum audio peak before ASR runs")
     parser.add_argument("--min-active-ratio", type=float, default=None, help="minimum ratio of active frames before ASR runs")
@@ -205,10 +213,18 @@ def add_chunker_options(parser: argparse.ArgumentParser) -> None:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
+    config_path = _doctor_config_path(args)
+    if args.prepare_models and config_path is None:
+        raise ValueError(
+            "--prepare-models needs a profile to know which model to fetch; "
+            "pass --profile <name> or --config <path>."
+        )
+
     checks = [
         ("numpy", "audio arrays", True),
         ("sounddevice", "audio capture/playback", True),
-        ("faster_whisper", "local ASR", True),
+        ("onnx_asr", "local ASR", True),
+        ("onnxruntime", "ASR runtime", True),
         ("ctranslate2", "bundled Argos model inference", True),
         ("sentencepiece", "bundled Argos tokenization", True),
         ("yaml", "YAML config", True),
@@ -224,9 +240,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             missing_required = True
 
     config_ok = True
-    if args.config:
+    if config_path is not None:
         config_ok = _print_config_checks(
-            load_config(Path(args.config)),
+            load_config(config_path),
             prepare_models=args.prepare_models,
         )
     if missing_required:
@@ -234,6 +250,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if missing_required or not config_ok:
         return 1
     return 0
+
+
+def _doctor_config_path(args: argparse.Namespace) -> Path | None:
+    """Config to validate, or None when doctor should only check dependencies."""
+    if args.config:
+        return Path(args.config)
+    if args.profile:
+        return default_profile_path(args.profile)
+    return None
 
 
 def _print_config_checks(config, *, prepare_models: bool) -> bool:
@@ -329,7 +354,7 @@ def _audio_device_detail(
 
 
 def _prepare_asr_model(config) -> str:
-    FasterWhisperAsr(config.asr)
+    create_asr(config.asr)
     return f"{config.asr.model} loaded"
 
 
@@ -480,6 +505,7 @@ def build_config(args: argparse.Namespace):
         input_device=getattr(args, "input_device", None),
         output_device=getattr(args, "output_device", None),
         input_gain=getattr(args, "input_gain", None),
+        asr_engine=getattr(args, "asr_engine", None),
         model=getattr(args, "model", None),
         source_language=getattr(args, "source_language", None),
         target_language=getattr(args, "target_language", None),
@@ -489,8 +515,8 @@ def build_config(args: argparse.Namespace):
         tts_model_path=getattr(args, "tts_model", None),
         piper_exe=getattr(args, "piper_exe", None),
         tts_length_scale=getattr(args, "tts_length_scale", None),
-        no_speech_threshold=getattr(args, "no_speech_threshold", None),
         log_prob_threshold=getattr(args, "log_prob_threshold", None),
+        flag_log_prob_threshold=getattr(args, "flag_log_prob_threshold", None),
         chunker_mode=getattr(args, "chunker", None),
         vad_threshold=getattr(args, "vad_threshold", None),
         peak_threshold=getattr(args, "peak_threshold", None),

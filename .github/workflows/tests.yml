@@ -1,0 +1,44 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is the target platform; Linux is here to catch anything that
+        # only works because of a Windows-specific path or API.
+        os: [windows-latest, ubuntu-latest]
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # No PortAudio install: every sounddevice import in the package sits
+      # inside a function, so nothing loads the library at import time.
+      # LazyAudioImportTests enforces that on every platform, which is cheaper
+      # and more direct than an apt-get that only guards the Linux legs.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      # No model is downloaded: the recognizer suite injects a fake model, so
+      # this runs offline in about a second.
+      - name: Test
+        run: python -m unittest discover -s tests -t tests -v
+
+      - name: Compile
+        run: python -m compileall -q src tests

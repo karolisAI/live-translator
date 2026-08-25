@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from live_translator.audio.io import _audio_packages
+from live_translator.audio.io import _numpy_package
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ def analyze_audio(
     active_rms_threshold: float,
     active_peak_threshold: float | None = None,
 ) -> AudioStats:
-    _, np = _audio_packages()
+    np = _numpy_package()
     samples = np.asarray(audio, dtype=np.float32).reshape(-1)
     if len(samples) == 0:
         return AudioStats(duration_seconds=0.0, rms=0.0, peak=0.0, active_ratio=0.0)

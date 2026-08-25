@@ -1,9 +1,10 @@
 # Live Translator
 
 Live Translator is an offline, near-real-time Windows speech translator for
-English and German meetings. It uses faster-whisper for speech recognition,
-Argos CTranslate2 models for text translation, Piper for speech synthesis, and
-VB-CABLE to expose translated speech as a meeting microphone.
+English and German meetings. It uses NVIDIA Parakeet TDT 0.6B v3 on onnxruntime
+for speech recognition, Argos CTranslate2 models for text translation, Piper for
+speech synthesis, and VB-CABLE to expose translated speech as a meeting
+microphone.
 
 No API key is required after the local models are prepared.
 
@@ -16,7 +17,7 @@ No API key is required after the local models are prepared.
 - Voice activity detection commits a phrase after a short pause.
 - ASR and translation models load, and Piper assets are validated, before the
   application reports `Ready`.
-- Low-energy noise and low-confidence Whisper output are not spoken.
+- Low-energy noise and low-confidence recognizer output are not spoken.
 - Bounded phrase queues prevent unlimited latency and report any overload.
 - Transient Windows output-start failures are retried on the verified WASAPI
   endpoint. A phrase that still cannot play is reported without closing the
@@ -26,7 +27,7 @@ This is phrase-level, one-direction translation per process. It is not
 simultaneous duplex interpretation or stabilized word-by-word captioning.
 
 ```text
-physical microphone -> continuous VAD capture -> faster-whisper -> Argos
+physical microphone -> continuous VAD capture -> Parakeet -> Argos
                                                         |
 meeting microphone <- CABLE Output <- CABLE Input <- Piper playback worker
 ```
@@ -112,7 +113,7 @@ Both profiles default to automatic device selection. LiveTranslator follows
 the Windows default physical microphone and finds a matching VB-CABLE playback
 and recording pair without storing fragile device indices.
 
-Prepare the faster-whisper model once while the machine is online, then verify
+Download the speech model once while the machine is online, then verify
 translation and audio routing:
 
 ```powershell
@@ -178,6 +179,38 @@ files into `models\tts`:
 - [German Thorsten medium](https://huggingface.co/rhasspy/piper-voices/tree/main/de/de_DE/thorsten/medium)
 - [English hfc_male medium](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/hfc_male/medium)
 
+## Speech Recognition
+
+Recognition runs NVIDIA Parakeet TDT 0.6B v3 through `onnx-asr` and
+`onnxruntime`, quantized to int8 on the CPU. Both directions use the same model;
+no per-language model swap is needed. On a 15 W mobile CPU it runs at roughly a
+fifth of real time in under 800 MB, so it keeps up with continuous speech
+without a GPU.
+
+New profiles already carry the right `asr` block:
+
+```yaml
+asr:
+  engine: parakeet
+  model: nemo-parakeet-tdt-0.6b-v3
+  device: cpu
+  compute_type: int8
+  cpu_threads: 8
+  source_language: en
+```
+
+The first run downloads the model into the Hugging Face cache and needs internet
+access. `doctor --config <profile> --prepare-models` does that download ahead of
+time; later runs are offline. `--prepare-models` reads the model name from the
+profile, so it needs `--config <path>` or `--profile <name>` and fails without
+one.
+
+The recognizer itself is in
+[src/live_translator/asr/recognizer.py](src/live_translator/asr/recognizer.py)
+and knows nothing about the rest of the application.
+[parakeet_engine.py](src/live_translator/asr/parakeet_engine.py) is the only
+place it meets this project's configuration.
+
 ## Profiles
 
 List devices and note the Windows host API. WASAPI endpoints are recommended:
@@ -206,6 +239,11 @@ overrides remain stable when Windows reorders device indices.
 
 `app.example.yaml` documents supported settings. It is a template, not a
 machine-ready meeting profile.
+
+Profiles written before the Parakeet switch will not load. They carry
+`engine: faster-whisper` and the `beam_size`, `condition_on_previous_text` and
+`no_speech_threshold` keys, which no longer exist. `doctor` names them and exits
+1. Run `setup` again to replace the profile, or edit the `asr` block by hand.
 
 ## Preflight
 
@@ -254,6 +292,41 @@ mode adds audio gates, queue delay, timing, and saved input chunks:
 live-translator meeting --profile en-de --verbose --debug-audio-dir debug-asr
 ```
 
+## When Something Does Not Work
+
+Check dependencies without touching a profile:
+
+```powershell
+live-translator doctor
+```
+
+Add `--profile <name>` (or `--config <path>`) to also validate that profile's
+devices, translation and voice; add `--prepare-models` to load its speech model
+as well.
+
+If a device fails to open, try each one and see which ones actually work. The
+output probe plays silence, so it is safe to run during a call:
+
+```powershell
+live-translator probe-input-devices
+live-translator probe-output-devices
+```
+
+Confirm the microphone is being captured at all, then listen back:
+
+```powershell
+live-translator record-test --seconds 5 --play
+```
+
+Test the two ends separately. `say` exercises Piper and playback with no
+microphone involved; `transcribe-once` exercises capture and recognition with no
+translation or speech involved:
+
+```powershell
+live-translator say --config $ENDE --text "Guten Morgen"
+live-translator transcribe-once --config $ENDE --seconds 5
+```
+
 ## Build the Windows Installer
 
 Contributors producing a new installer need the source environment and all
@@ -274,23 +347,23 @@ the complete PyInstaller application folder; recipients do not also need the
 `dist\LiveTranslator` directory. Update `MyAppVersion` in
 `packaging\windows\LiveTranslator.iss` before producing a release build.
 
-The faster-whisper model remains in each Windows user's Hugging Face cache, so
-run `doctor --prepare-models` online once on every target machine before relying
-on offline operation.
+The speech model remains in each Windows user's Hugging Face cache, so run
+`doctor --config <profile> --prepare-models` online once on every target machine
+before relying on offline operation.
 
 ## Verification
 
 ```powershell
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -t tests -v
 python -m compileall -q src tests
 python -m pip check
 ```
 
 The automated suite covers configuration, audio analysis, resampling,
-continuous segmentation, concurrent recognition/playback, overload behavior,
-worker failure propagation, and virtual-route tone detection. Hardware and
-model checks are performed with `doctor`, `route-test`, `say`, and the one-shot
-commands.
+continuous segmentation, recognizer decoding and confidence rejection,
+concurrent recognition/playback, overload behavior, worker failure propagation,
+and virtual-route tone detection. Hardware and model checks are performed with
+`doctor`, `route-test`, `say`, and the one-shot commands.
 
 Additional references:
 
@@ -299,3 +372,6 @@ Additional references:
 - `docs/03-windows-audio-routing.md`: Windows endpoint routing
 - `docs/04-meeting-test.md`: meeting validation checklist
 - `docs/05-windows-packaging.md`: executable build and installation
+
+Benchmark write-ups and their audio live in `research/`, which is not tracked in
+Git.

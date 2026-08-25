@@ -37,11 +37,12 @@ dist/LiveTranslator/LiveTranslator.exe
 The PyInstaller folder contains the Python runtime, CTranslate2 libraries,
 Argos models, Piper, and both voices.
 
-## Whisper Model Cache
+## Speech Model Cache
 
-The current build does not bundle the faster-whisper model. A named model such
-as `base` is downloaded to the current Windows user's Hugging Face cache on its
-first load. Before offline use on a new machine, run while online:
+The current build does not bundle the speech model. A named model such as
+`nemo-parakeet-tdt-0.6b-v3` is downloaded to the current Windows user's Hugging
+Face cache on its first load. Before offline use on a new machine, run while
+online:
 
 ```powershell
 .\dist\LiveTranslator\LiveTranslator.exe doctor `

@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from .defaults import DEFAULT_ASR_ENGINE, DEFAULT_ASR_MODEL, SUPPORTED_ASR_ENGINES
 from .errors import MissingDependency
 
 
@@ -20,16 +21,14 @@ class AudioSettings:
 
 @dataclass(frozen=True)
 class AsrSettings:
-    engine: str = "faster-whisper"
-    model: str = "base"
-    device: str = "auto"
-    compute_type: str = "auto"
+    engine: str = DEFAULT_ASR_ENGINE
+    model: str = DEFAULT_ASR_MODEL
+    device: str = "cpu"
+    compute_type: str = "int8"
     cpu_threads: int = 0
     source_language: str | None = "en"
-    beam_size: int = 1
-    condition_on_previous_text: bool = False
-    no_speech_threshold: float = 0.75
     log_prob_threshold: float = -1.3
+    flag_log_prob_threshold: float | None = None
     compression_ratio_threshold: float = 2.4
     min_segment_chars: int = 2
 
@@ -101,10 +100,8 @@ _SECTION_KEYS: dict[str, set[str]] = {
         "compute_type",
         "cpu_threads",
         "source_language",
-        "beam_size",
-        "condition_on_previous_text",
-        "no_speech_threshold",
         "log_prob_threshold",
+        "flag_log_prob_threshold",
         "compression_ratio_threshold",
         "min_segment_chars",
     },
@@ -168,6 +165,7 @@ def apply_cli_overrides(
     input_device: str | None = None,
     output_device: str | None = None,
     input_gain: float | None = None,
+    asr_engine: str | None = None,
     model: str | None = None,
     source_language: str | None = None,
     target_language: str | None = None,
@@ -177,8 +175,8 @@ def apply_cli_overrides(
     tts_model_path: str | None = None,
     piper_exe: str | None = None,
     tts_length_scale: float | None = None,
-    no_speech_threshold: float | None = None,
     log_prob_threshold: float | None = None,
+    flag_log_prob_threshold: float | None = None,
     chunker_mode: str | None = None,
     vad_threshold: float | None = None,
     peak_threshold: float | None = None,
@@ -202,6 +200,8 @@ def apply_cli_overrides(
         audio = replace(audio, output_device=output_device)
     if input_gain is not None:
         audio = replace(audio, input_gain=input_gain)
+    if asr_engine is not None:
+        asr = replace(asr, engine=asr_engine)
     if model is not None:
         asr = replace(asr, model=model)
     if source_language is not None:
@@ -221,10 +221,10 @@ def apply_cli_overrides(
         tts = replace(tts, piper_exe=piper_exe)
     if tts_length_scale is not None:
         tts = replace(tts, length_scale=tts_length_scale)
-    if no_speech_threshold is not None:
-        asr = replace(asr, no_speech_threshold=no_speech_threshold)
     if log_prob_threshold is not None:
         asr = replace(asr, log_prob_threshold=log_prob_threshold)
+    if flag_log_prob_threshold is not None:
+        asr = replace(asr, flag_log_prob_threshold=flag_log_prob_threshold)
     if chunker_mode is not None:
         chunking = replace(chunking, mode=chunker_mode)
     if vad_threshold is not None:
@@ -256,25 +256,29 @@ def apply_cli_overrides(
 
 def validate_config(config: AppConfig) -> None:
     if config.audio.sample_rate != 16000:
-        raise ValueError("audio.sample_rate must be 16000 for faster-whisper")
+        raise ValueError("audio.sample_rate must be 16000")
     if config.audio.chunk_seconds <= 0.0:
         raise ValueError("audio.chunk_seconds must be positive")
     if config.audio.input_gain <= 0.0:
         raise ValueError("audio.input_gain must be positive")
     if config.audio.playback_gain <= 0.0:
         raise ValueError("audio.playback_gain must be positive")
-    if config.asr.engine.lower() != "faster-whisper":
+    if config.asr.engine.lower() not in SUPPORTED_ASR_ENGINES:
         raise ValueError(f"Unsupported ASR engine: {config.asr.engine}")
     if not config.asr.model:
         raise ValueError("asr.model must not be empty")
-    if config.asr.beam_size <= 0:
-        raise ValueError("asr.beam_size must be positive")
     if config.asr.cpu_threads < 0:
         raise ValueError("asr.cpu_threads must not be negative")
-    if not 0.0 < config.asr.no_speech_threshold <= 1.0:
-        raise ValueError("asr.no_speech_threshold must be greater than 0 and at most 1")
     if config.asr.compression_ratio_threshold <= 0.0:
         raise ValueError("asr.compression_ratio_threshold must be positive")
+    if (
+        config.asr.flag_log_prob_threshold is not None
+        and config.asr.flag_log_prob_threshold <= config.asr.log_prob_threshold
+    ):
+        raise ValueError(
+            "asr.flag_log_prob_threshold must be greater than asr.log_prob_threshold "
+            "(otherwise everything it would flag is already rejected first)"
+        )
     if config.asr.min_segment_chars <= 0:
         raise ValueError("asr.min_segment_chars must be positive")
 
@@ -372,16 +376,14 @@ def _load_audio(raw: dict[str, Any]) -> AudioSettings:
 
 def _load_asr(raw: dict[str, Any]) -> AsrSettings:
     return AsrSettings(
-        engine=_str(raw, "engine", "faster-whisper"),
-        model=_str(raw, "model", "base"),
-        device=_str(raw, "device", "auto"),
-        compute_type=_str(raw, "compute_type", "auto"),
+        engine=_str(raw, "engine", DEFAULT_ASR_ENGINE),
+        model=_str(raw, "model", DEFAULT_ASR_MODEL),
+        device=_str(raw, "device", "cpu"),
+        compute_type=_str(raw, "compute_type", "int8"),
         cpu_threads=_nonnegative_int(raw, "cpu_threads", 0),
         source_language=_str_or_none(raw, "source_language", "en"),
-        beam_size=_int(raw, "beam_size", 1),
-        condition_on_previous_text=_bool(raw, "condition_on_previous_text", False),
-        no_speech_threshold=_float(raw, "no_speech_threshold", 0.75),
         log_prob_threshold=_float_any(raw, "log_prob_threshold", -1.3),
+        flag_log_prob_threshold=_float_or_none(raw, "flag_log_prob_threshold"),
         compression_ratio_threshold=_float(raw, "compression_ratio_threshold", 2.4),
         min_segment_chars=_int(raw, "min_segment_chars", 2),
     )
