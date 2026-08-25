@@ -167,6 +167,20 @@ class PrepareModelsCommandTests(unittest.TestCase):
             self.assertEqual(spy.call_args.kwargs["revision"], ASR_MODEL_REVISION)
             self.assertEqual(recorded_revision(model_dir), ASR_MODEL_REVISION)
 
+    def test_missing_default_profile_points_at_setup(self) -> None:
+        """Running prepare-models before setup has created a profile should name
+        the fix command, like every other error in this feature, rather than a
+        bare 'Config file not found'."""
+        with TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "default.yaml"
+            with patch("live_translator.cli.default_profile_path", return_value=missing):
+                errors = io.StringIO()
+                with patch("sys.stderr", errors):
+                    code = main(["prepare-models"])
+
+        self.assertEqual(code, 1)
+        self.assertIn("setup --profile default", errors.getvalue())
+
     def test_meeting_on_an_unprepared_machine_reports_how_to_prepare(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

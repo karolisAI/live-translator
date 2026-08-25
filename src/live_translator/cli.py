@@ -379,7 +379,13 @@ def _prepare_asr_model(config) -> str:
 
 def cmd_prepare_models(args: argparse.Namespace) -> int:
     if args.config is None:
-        args.config = str(default_profile_path(args.profile))
+        config_path = default_profile_path(args.profile)
+        if not config_path.exists():
+            raise FileNotFoundError(
+                f"No '{args.profile}' profile yet at '{config_path}'. Create it first "
+                f"with: live-translator setup --profile {args.profile}"
+            )
+        args.config = str(config_path)
     config = load_config(Path(args.config))
     try:
         directory = verify_local_model(config.asr)
