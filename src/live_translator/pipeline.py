@@ -240,7 +240,7 @@ class LocalTranslatorPipeline:
         translated = translator.translate(transcript.text)
         self._write_debug_note(debug_wav, transcript.text, translated)
         self._print_asr_rejections(transcript)
-        if self._verbose or self._show_text:
+        if self._show_text:
             self._print_translation(transcript.text, translated, transcript.low_confidence)
         rendered = speaker.render(translated) if translated else None
         if self._verbose:

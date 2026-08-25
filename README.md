@@ -288,8 +288,9 @@ capture for each block.
 Normal mode prints one line per phrase: its number, how long it was, and how
 long it took to be ready. It does not print the transcript or the translation,
 so a confidential meeting leaves no content in the terminal or its scrollback.
-Diagnostic mode adds the source text and its translation, audio gates, queue
-delay, timing, and saved input chunks:
+`--show-text` prints the source text and its translation on screen and nothing
+else, writing nothing to disk. Diagnostic mode adds audio gates, queue delay,
+timing, and saved input chunks on top of the same text:
 
 ```powershell
 live-translator meeting --profile en-de --verbose --debug-audio-dir debug-asr

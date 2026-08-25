@@ -84,9 +84,12 @@ class NormalModeOutputTests(unittest.TestCase):
     console is the one place meeting content leaked without anyone opting in,
     and terminal scrollback keeps it for the rest of the session."""
 
-    def _run_segment(self, *, verbose: bool, low_confidence: bool = False) -> str:
+    def _run_segment(
+        self, *, verbose: bool, show_text: bool = False, low_confidence: bool = False
+    ) -> str:
         pipeline = LocalTranslatorPipeline(AppConfig())
         pipeline._verbose = verbose
+        pipeline._show_text = show_text
 
         class FakeTranslator:
             def translate(self, text: str) -> str:
@@ -132,8 +135,25 @@ class NormalModeOutputTests(unittest.TestCase):
         self.assertIn("low confidence", output)
         self.assertNotIn("confidential source", output)
 
-    def test_verbose_still_shows_source_and_target(self) -> None:
-        output = self._run_segment(verbose=True)
+    def test_verbose_alone_does_not_print_source_or_target(self) -> None:
+        """--verbose is operational telemetry -- audio gates, per-segment
+        timing -- not a second way to display meeting content. Someone
+        troubleshooting VAD during a confidential meeting should not retain
+        the conversation in scrollback without asking for it specifically."""
+        output = self._run_segment(verbose=True, show_text=False)
+
+        self.assertNotIn("confidential source", output)
+        self.assertNotIn("geheime Übersetzung", output)
+
+    def test_verbose_alone_still_shows_its_own_telemetry(self) -> None:
+        """The fix above must not silence --verbose entirely, only the text."""
+        output = self._run_segment(verbose=True, show_text=False)
+
+        self.assertIn("Segment 7:", output)
+
+    def test_verbose_and_show_text_together_shows_the_text(self) -> None:
+        """Asking for both must not cancel either one out."""
+        output = self._run_segment(verbose=True, show_text=True)
 
         self.assertIn("confidential source", output)
         self.assertIn("geheime Übersetzung", output)
