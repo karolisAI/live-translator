@@ -69,8 +69,9 @@ Wait for `Ready`, then speak a short English phrase and pause. Confirm:
 
 Normal mode prints no transcript and no translation, so a confidential meeting
 leaves no content in the terminal or its scrollback. To check the text itself,
-repeat the run with `--verbose`, which prints the source phrase and its
-translation as before.
+repeat the run with `--show-text`, which prints the source phrase and its
+translation and nothing else. `--verbose` no longer shows this text; it is
+telemetry only (audio gates, per-segment timing).
 
 End that meeting process with `Ctrl+C`, then test the reverse profile. This key
 combination ends the session only; capture and translation do not require a key
@@ -83,12 +84,13 @@ live-translator meeting --profile de-en
 ## Diagnostic Mode
 
 ```powershell
-live-translator meeting --profile en-de --verbose --debug-audio-dir debug-asr
+live-translator meeting --profile en-de --verbose --show-text --debug-audio-dir debug-asr
 ```
 
-Diagnostic mode prints the source text and its translation, which normal mode
-withholds, plus energy levels, confidence rejections, and segment timing.
-Each accepted or skipped chunk is written as a WAV with a neighboring text file.
+`--show-text` prints the source text and its translation, which normal mode
+withholds; `--verbose` adds energy levels, confidence rejections, and segment
+timing. Each accepted or skipped chunk is written as a WAV with a neighboring
+text file.
 Listen to the WAV before changing model or threshold settings; an incorrect or
 muffled source device cannot be fixed by ASR tuning.
 
