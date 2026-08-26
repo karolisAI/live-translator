@@ -325,7 +325,11 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("tts.model_path is required when tts.engine is 'piper'")
     if config.tts.length_scale is not None and config.tts.length_scale <= 0.0:
         raise ValueError("tts.length_scale must be positive")
-    if config.tts.piper_timeout_seconds <= 0.0:
+    # Not `<= 0.0`: NaN compares False against everything, including this,
+    # so `piper_timeout_seconds: .nan` would pass validation and reach
+    # subprocess.run(timeout=nan) on the first phrase instead of failing
+    # cleanly at startup.
+    if not (config.tts.piper_timeout_seconds > 0):
         raise ValueError("tts.piper_timeout_seconds must be positive")
 
     if config.chunking.mode.lower() not in {"fixed", "vad", "rolling"}:
@@ -510,7 +514,11 @@ def _float(raw: dict[str, Any], key: str, default: float) -> float:
         parsed = float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{key} must be a number") from exc
-    if parsed <= 0:
+    # Not `parsed <= 0`: every comparison with NaN is False, including
+    # `nan <= 0`, so that check lets `.nan` (valid PyYAML float syntax)
+    # through as if it were positive. `not (parsed > 0)` catches zero,
+    # negatives, and NaN the same way.
+    if not (parsed > 0):
         raise ValueError(f"{key} must be positive")
     return parsed
 

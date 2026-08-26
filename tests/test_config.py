@@ -124,6 +124,7 @@ class ConfigTests(unittest.TestCase):
             {"max_seconds": -1.0},
             {"tts_length_scale": -1.0},
             {"piper_timeout_seconds": -1.0},
+            {"piper_timeout_seconds": float("nan")},
         )
         for override in overrides:
             with self.subTest(override=override), self.assertRaisesRegex(ValueError, "positive"):
@@ -168,6 +169,21 @@ class ConfigTests(unittest.TestCase):
 
     def test_piper_timeout_defaults_to_thirty_seconds(self) -> None:
         self.assertEqual(AppConfig().tts.piper_timeout_seconds, 30.0)
+
+    def test_rejects_a_nan_piper_timeout_from_yaml(self) -> None:
+        """`.nan` is valid PyYAML float syntax, and NaN compares False
+        against everything, including `<= 0` -- a check written that way
+        would let it through and reach subprocess.run(timeout=nan) on the
+        first phrase instead of failing at load time."""
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "app.yaml"
+            config_path.write_text(
+                "tts:\n  engine: piper\n  model_path: voice.onnx\n  piper_timeout_seconds: .nan\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "positive"):
+                load_config(config_path)
 
     def test_loads_tts_speaker_field(self) -> None:
         with TemporaryDirectory() as temp_dir:
