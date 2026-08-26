@@ -1,11 +1,13 @@
 import unittest
 from dataclasses import dataclass
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import numpy as np
 
 from live_translator.asr.recognizer import ParakeetRecognizer, compression_ratio
-from live_translator.errors import UnsupportedModel
+from live_translator.errors import ModelNotPrepared, UnsupportedModel
 
 
 @dataclass
@@ -749,17 +751,17 @@ class EmptyReasonTests(unittest.TestCase):
 
 class QuantizationTests(unittest.TestCase):
     def test_full_precision_aliases_become_none(self) -> None:
-        from live_translator.asr.recognizer import _normalize_quantization
+        from live_translator.asr.recognizer import normalize_quantization
 
         for value in ("auto", "default", "float32", "fp32", "float", "none", " AUTO ", "", None):
             with self.subTest(value=value):
-                self.assertIsNone(_normalize_quantization(value))
+                self.assertIsNone(normalize_quantization(value))
 
     def test_quantization_suffix_is_passed_through(self) -> None:
-        from live_translator.asr.recognizer import _normalize_quantization
+        from live_translator.asr.recognizer import normalize_quantization
 
-        self.assertEqual(_normalize_quantization("int8"), "int8")
-        self.assertEqual(_normalize_quantization(" INT8 "), "int8")
+        self.assertEqual(normalize_quantization("int8"), "int8")
+        self.assertEqual(normalize_quantization(" INT8 "), "int8")
 
 
 class ConcatLogprobsTests(unittest.TestCase):
@@ -824,6 +826,18 @@ class ModelValidationTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "could not reach the model cache"):
                 ParakeetRecognizer("nemo-parakeet-tdt-0.6b-v3")
+
+    def test_missing_model_dir_raises_before_loading(self) -> None:
+        """A model_dir that isn't a directory would fall through to onnx-asr's
+        downloader. The recognizer refuses it up front, before load_model, so a
+        direct caller cannot turn a missing model into a download -- the guard
+        the application layer's verify_local_model normally reaches first."""
+        with TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "never-prepared"
+            with patch("onnx_asr.load_model") as fake_load_model:
+                with self.assertRaises(ModelNotPrepared):
+                    ParakeetRecognizer("nemo-parakeet-tdt-0.6b-v3", model_dir=missing)
+                fake_load_model.assert_not_called()
 
 
 class DeviceValidationTests(unittest.TestCase):

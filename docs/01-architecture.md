@@ -14,13 +14,19 @@ a conversation simultaneously.
 
 Meeting mode completes these steps before reporting `Ready`:
 
-1. Load the configured Parakeet model.
+1. Validate the prepared Parakeet model directory, then load from it.
 2. Open the configured Argos CTranslate2 model and SentencePiece tokenizer.
 3. Validate the Piper executable, voice model, and voice JSON.
 4. Resolve the configured input and output devices when capture begins.
 
+Step 1 runs before step 4, so an unprepared machine fails while no audio device
+is open and no meeting audio exists in the process. The model is loaded by
+handing `onnx-asr` the prepared directory, which puts its resolver in offline
+mode: a missing file becomes an error rather than a download. `prepare-models`
+is the only command that fetches one, and it is not part of this sequence.
+
 `doctor --prepare-models` performs the same asset and model checks without
-starting the meeting loop.
+starting the meeting loop, and likewise never downloads.
 
 ## Live Processing
 
@@ -137,10 +143,25 @@ endpoint. If all three starts fail, that phrase is skipped with a warning while
 capture and recognition remain active. Recognition or translation worker
 failures remain fatal because subsequent phrases cannot be processed safely.
 
-Argos packages are discovered in `ARGOS_PACKAGES_DIR`, the bundled
-`models/argos/packages` directory, or the normal per-user Argos data directory.
-Piper models and the executable are resolved relative to the working directory,
-the installed executable directory, or the PyInstaller bundle directory.
+Piper's executable and voice model, and the bundled-default candidate for
+Argos packages, resolve only against the app's own installed/bundled
+location (`runtime.approved_runtime_roots()`: the frozen executable's
+directory, the PyInstaller bundle directory, or the package root when running
+from source) -- never the current working directory, since anyone able to
+launch the app from an arbitrary directory, or place a file in one already on
+that list, could otherwise get an untrusted file resolved and, for Piper,
+run. A local development override (`LIVE_TRANSLATOR_DEV_RUNTIME_ROOT`) exists
+to unblock testing a build from somewhere else, but is never active unless
+explicitly set, and never honored in a frozen build regardless of whether
+the variable is set, so it structurally cannot widen trust for a real
+installed app.
+
+Argos packages additionally check `ARGOS_PACKAGES_DIR` and the normal
+per-user Argos data directory (`XDG_DATA_HOME`, or `~/.local/share`) ahead of
+and after the bundled default, respectively. Unlike the bundled-default path,
+these two remain deliberately unrestricted in *where* they may point -- an
+operator pointing at a custom or updated package location is a supported
+use, not a fallback for something missing.
 
 Named Parakeet models use the Hugging Face user cache. That cache is not
 inside this repository or the packaged application.
