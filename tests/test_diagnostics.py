@@ -21,6 +21,7 @@ from live_translator.diagnostics import (
     NotOurDirectory,
     LOW_WATER_FRACTION,
     CaptureLimits,
+    captured_files,
     capture_warning,
     purge,
     sweep,
@@ -460,6 +461,67 @@ class PurgeTests(unittest.TestCase):
 
         self.assertTrue(stranger.exists(), "only our own filenames may be deleted")
 
+
+class SymlinkEscapeTests(unittest.TestCase):
+    """A `session-*` entry can be a symlink -- or, on Windows, an NTFS
+    junction -- to a directory outside the diagnostics root while still
+    passing `is_dir()`. Without resolving and checking containment,
+    `captured_files()` would report whatever sits at the far end, and
+    `sweep()`/`purge()` would delete it.
+    """
+
+    def setUp(self) -> None:
+        self._temp = TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.root = Path(self._temp.name) / "diagnostics"
+        self.root.mkdir(parents=True)
+        self.outside = Path(self._temp.name) / "not-diagnostics"
+        self.outside.mkdir(parents=True)
+
+    def _symlinked_session(self) -> Path:
+        """A `session-*` entry inside `root` that is really a symlink to
+        `outside`, containing a file that satisfies every naming rule
+        `captured_files()` checks.
+
+        Skips rather than fails where this process cannot create a directory
+        symlink -- on Windows that needs Developer Mode or an elevated
+        process. This test is about containment once a symlink exists, not
+        about proving symlink creation itself works in every environment.
+        """
+        (self.outside / segment_audio_name(1)).write_bytes(b"not ours" * 1024)
+        link = self.root / "session-escape-attempt"
+        try:
+            os.symlink(self.outside, link, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"cannot create a directory symlink here: {exc}")
+        return link
+
+    def test_captured_files_does_not_follow_a_symlinked_session(self) -> None:
+        self._symlinked_session()
+
+        self.assertEqual(captured_files(self.root), [])
+
+    def test_purge_does_not_delete_through_a_symlinked_session(self) -> None:
+        self._symlinked_session()
+        target_file = self.outside / segment_audio_name(1)
+
+        purge(DiagnosticsSettings(), self.root)
+
+        self.assertTrue(
+            target_file.exists(), "a file outside the diagnostics root must survive purge"
+        )
+
+    def test_sweep_does_not_delete_through_a_symlinked_session(self) -> None:
+        self._symlinked_session()
+        target_file = self.outside / segment_audio_name(1)
+        ancient = (datetime.now() - timedelta(days=999)).timestamp()
+        os.utime(target_file, (ancient, ancient))
+
+        sweep(DiagnosticsSettings(retention_days=1, max_total_mb=0), self.root)
+
+        self.assertTrue(
+            target_file.exists(), "age-based retention must not reach outside the root"
+        )
 
 
 if __name__ == "__main__":

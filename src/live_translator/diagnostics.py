@@ -130,28 +130,64 @@ class SweepResult:
         return self.files_removed > 0
 
 
+def _resolved_within(path: Path, root_resolved: Path) -> Path | None:
+    """`path` resolved, if the resolved form stays inside `root_resolved`; else None.
+
+    `is_dir()`/`is_file()` say nothing about whether `path` is a symlink or an
+    NTFS junction -- Windows resolves either transparently, so a `session-*`
+    entry (or a file inside an otherwise real session) can point anywhere on
+    disk while still passing those checks. Without this, `captured_files()`
+    would report files that were never written under the diagnostics root,
+    and `sweep()`/`purge()` would delete them. Comparing resolved paths is
+    what actually closes that; `root_resolved` is taken pre-resolved so a
+    caller checking many entries against one root only resolves it once.
+
+    `os.path.normcase` handles the same Windows case-insensitivity and
+    short-vs-long (8.3) path-form mismatch that `runtime.resolve_trusted_path`
+    already guards against for the same reason: `TemporaryDirectory()` can
+    hand back a short-form path that only matches its long form once both
+    sides are resolved.
+    """
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return None
+    normalized_path = os.path.normcase(str(resolved))
+    normalized_root = os.path.normcase(str(root_resolved))
+    if normalized_path == normalized_root or normalized_path.startswith(normalized_root + os.sep):
+        return resolved
+    return None
+
+
 def captured_files(root: Path) -> list[Path]:
     """Only the files this application writes, never anything else.
 
     Retention and purge both delete from a directory the user may have chosen,
     so neither may work by "everything in here". A file counts as ours only if
-    it sits in a session directory we named and carries a segment name we
-    generate.
+    it sits in a session directory we named, carries a segment name we
+    generate, and -- resolved -- actually lives under `root`. That last part
+    is not redundant with the naming check: a symlinked or junctioned
+    `session-*` directory can carry files matching every naming rule while
+    living somewhere else entirely.
     """
     if not root.is_dir():
         return []
 
+    root_resolved = root.resolve()
     found: list[Path] = []
     for session in root.glob(f"{SESSION_PREFIX}-*"):
-        if not session.is_dir():
+        if not session.is_dir() or _resolved_within(session, root_resolved) is None:
             continue
         for item in session.iterdir():
-            if (
+            if not (
                 item.is_file()
                 and item.name.startswith(f"{SEGMENT_PREFIX}-")
                 and item.suffix in {AUDIO_SUFFIX, NOTE_SUFFIX}
             ):
-                found.append(item)
+                continue
+            if _resolved_within(item, root_resolved) is None:
+                continue
+            found.append(item)
     return found
 
 
