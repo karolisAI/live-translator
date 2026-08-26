@@ -31,6 +31,15 @@ def profile_dir() -> Path:
     return user_data_dir() / "profiles"
 
 
+def diagnostics_dir() -> Path:
+    """Per-user home for captured meeting content.
+
+    Resolved through `user_data_dir` on every call rather than cached, because
+    group policy can redirect %LOCALAPPDATA% on a corporate machine.
+    """
+    return user_data_dir() / "diagnostics"
+
+
 def default_profile_path(profile_name: str = "default") -> Path:
     return profile_dir() / f"{profile_name}.yaml"
 
