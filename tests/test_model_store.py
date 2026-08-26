@@ -272,11 +272,30 @@ class DownloadModelTests(unittest.TestCase):
                 with self.assertRaises(ModelNotPrepared):
                     download_model(settings_for(directory), announce=False)
 
-    def test_refuses_a_model_it_has_no_pin_for(self) -> None:
+    def test_refuses_to_download_any_model_but_the_pinned_default(self) -> None:
+        """download_model may only fetch the pinned repo, so a non-default
+        asr.model is refused before any network call."""
         with patch("huggingface_hub.snapshot_download") as spy:
-            with self.assertRaisesRegex(ValueError, "no prepared local assets"):
+            with self.assertRaisesRegex(ValueError, "cannot be downloaded"):
                 download_model(AsrSettings(model="whisper-base"), announce=False)
             spy.assert_not_called()
+
+    def test_refuses_to_download_a_custom_model_even_with_a_directory(self) -> None:
+        """A custom asr.model with an explicit but empty model_dir must not be
+        populated with the pinned default's files and stamped as prepared.
+        verify_local_model can *read* a staged custom model, but download_model
+        must never *fetch* one -- the only repo this build knows is the default."""
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "custom"
+            directory.mkdir()
+
+            with patch("huggingface_hub.snapshot_download") as spy:
+                with self.assertRaisesRegex(ValueError, "cannot be downloaded"):
+                    download_model(
+                        settings_for(directory, model="nemo-parakeet-tdt-0.6b-v2"),
+                        announce=False,
+                    )
+                spy.assert_not_called()
 
 
 class OnnxAsrOfflineContractTests(unittest.TestCase):

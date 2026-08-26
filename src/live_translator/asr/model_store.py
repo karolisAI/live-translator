@@ -189,8 +189,23 @@ def download_model(settings: Any, *, announce: bool = True) -> Path:
 
     The only such function in the application. Everything else reads what this
     leaves behind.
+
+    Downloading is stricter than verifying: `verify_local_model` will read a
+    custom `asr.model` from an explicit `asr.model_dir` (a staged model this
+    build never fetched), but the only repository this build can actually fetch
+    is the pinned default. Fetching it for a different `asr.model` would fill
+    that directory with the wrong files and stamp them as prepared, so a
+    non-default model is refused here with instructions to stage it by hand --
+    even when `_require_preparable_model` (shared with the read path) would let
+    it through because a directory is set.
     """
-    _require_preparable_model(settings)
+    model = getattr(settings, "model", DEFAULT_ASR_MODEL)
+    if model != DEFAULT_ASR_MODEL:
+        raise ValueError(
+            f"asr.model '{model}' cannot be downloaded: this build only fetches the "
+            f"pinned '{DEFAULT_ASR_MODEL}'. Stage '{model}' into its asr.model_dir "
+            f"yourself -- prepare-models will not fetch it -- or use the pinned model."
+        )
     directory = model_dir(settings)
     quantization = normalize_quantization(getattr(settings, "compute_type", None))
 

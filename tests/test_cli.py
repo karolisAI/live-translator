@@ -167,6 +167,33 @@ class PrepareModelsCommandTests(unittest.TestCase):
             self.assertEqual(spy.call_args.kwargs["revision"], ASR_MODEL_REVISION)
             self.assertEqual(recorded_revision(model_dir), ASR_MODEL_REVISION)
 
+    def test_custom_model_with_a_missing_directory_says_to_stage_it(self) -> None:
+        """prepare-models for a non-default asr.model must not fetch the pinned
+        default into the custom directory -- it should tell the operator to
+        stage that model by hand, without touching the network."""
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = root / "custom.yaml"
+            profile.write_text(
+                yaml.safe_dump(
+                    {
+                        "asr": {
+                            "model": "nemo-parakeet-tdt-0.6b-v2",
+                            "model_dir": str(root / "staged"),
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            errors = io.StringIO()
+            with network_blocked():
+                with patch("sys.stderr", errors):
+                    code = main(["prepare-models", "--config", str(profile)])
+
+        self.assertEqual(code, 1)
+        self.assertIn("cannot be downloaded", errors.getvalue())
+
     def test_missing_default_profile_points_at_setup(self) -> None:
         """Running prepare-models before setup has created a profile should name
         the fix command, like every other error in this feature, rather than a
