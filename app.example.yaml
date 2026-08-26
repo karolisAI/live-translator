@@ -40,6 +40,7 @@ tts:
   piper_exe: tools/piper/piper.exe
   speaker: null
   length_scale: 1.0
+  piper_timeout_seconds: 30.0
 
 chunking:
   mode: vad
