@@ -20,7 +20,8 @@ from live_translator.config import (
     validate_config,
 )
 from live_translator.defaults import ASR_ENGINES, DEFAULT_ASR_ENGINE
-from live_translator.errors import UnsupportedModel
+from live_translator.errors import ModelNotPrepared, UnsupportedModel
+from test_model_store import network_blocked, prepare_dir
 
 
 @dataclass
@@ -101,41 +102,110 @@ class ParakeetAdapterTests(unittest.TestCase):
     def test_constructs_recognizer_from_settings(self) -> None:
         """The other tests here bypass __init__ via build_adapter(), so nothing
         else verifies that AsrSettings actually reaches ParakeetRecognizer."""
-        settings = AsrSettings(
-            engine="parakeet",
-            model="nemo-parakeet-tdt-0.6b-v3",
-            compute_type="int8",
-            device="cpu",
-            cpu_threads=8,
-            source_language="de",
-            min_segment_chars=2,
-            log_prob_threshold=-1.3,
-            flag_log_prob_threshold=-0.05,
-            compression_ratio_threshold=2.4,
-        )
+        with TemporaryDirectory() as tmp:
+            directory = prepare_dir(Path(tmp) / "parakeet")
+            settings = AsrSettings(
+                engine="parakeet",
+                model="nemo-parakeet-tdt-0.6b-v3",
+                model_dir=str(directory),
+                compute_type="int8",
+                device="cpu",
+                cpu_threads=8,
+                source_language="de",
+                min_segment_chars=2,
+                log_prob_threshold=-1.3,
+                flag_log_prob_threshold=-0.05,
+                compression_ratio_threshold=2.4,
+            )
 
-        with patch("live_translator.asr.parakeet_engine.ParakeetRecognizer") as fake_cls:
-            ParakeetAsr(settings)
+            with patch("live_translator.asr.parakeet_engine.ParakeetRecognizer") as fake_cls:
+                ParakeetAsr(settings)
 
-        fake_cls.assert_called_once_with(
-            "nemo-parakeet-tdt-0.6b-v3",
-            quantization="int8",
-            device="cpu",
-            cpu_threads=8,
-            language="de",
-            min_chars=2,
-            log_prob_threshold=-1.3,
-            flag_log_prob_threshold=-0.05,
-            compression_ratio_threshold=2.4,
-        )
+            fake_cls.assert_called_once_with(
+                "nemo-parakeet-tdt-0.6b-v3",
+                model_dir=directory,
+                quantization="int8",
+                device="cpu",
+                cpu_threads=8,
+                language="de",
+                min_chars=2,
+                log_prob_threshold=-1.3,
+                flag_log_prob_threshold=-0.05,
+                compression_ratio_threshold=2.4,
+            )
 
     def test_translates_unsupported_model_into_a_config_facing_error(self) -> None:
-        with patch(
-            "live_translator.asr.parakeet_engine.ParakeetRecognizer",
-            side_effect=UnsupportedModel("'base' is not a Parakeet model"),
-        ):
-            with self.assertRaisesRegex(ValueError, r"asr\.model 'base' is not a Parakeet model"):
-                ParakeetAsr(AsrSettings(engine="parakeet", model="base"))
+        """A prepared directory is staged first, so this exercises the model
+        complaint from the recognizer rather than the earlier refusal to look
+        for assets a model has no pin for."""
+        with TemporaryDirectory() as tmp:
+            directory = prepare_dir(Path(tmp) / "parakeet")
+            with patch(
+                "live_translator.asr.parakeet_engine.ParakeetRecognizer",
+                side_effect=UnsupportedModel("'base' is not a Parakeet model"),
+            ):
+                with self.assertRaisesRegex(ValueError, r"asr\.model 'base' is not a Parakeet model"):
+                    ParakeetAsr(
+                        AsrSettings(engine="parakeet", model="base", model_dir=str(directory))
+                    )
+
+
+class OfflineStartupTests(unittest.TestCase):
+    """Meeting mode must start from prepared assets and nothing else.
+
+    `test_model_store` proves onnx-asr honours a local directory. What is left
+    to prove here is that this application actually hands it one, for either
+    meeting direction, and that no preparation code runs on the way.
+    """
+
+    def build_engine(self, directory: Path, language: str):
+        settings = AsrSettings(
+            engine="parakeet", model_dir=str(directory), source_language=language
+        )
+        with patch("live_translator.asr.parakeet_engine.ParakeetRecognizer") as fake_cls:
+            engine = ParakeetAsr(settings)
+        return engine, fake_cls
+
+    def test_both_meeting_directions_start_with_the_network_blocked(self) -> None:
+        """One prepared model serves both profiles -- they differ only in
+        source_language -- so this also pins that a second asset is not
+        silently required for the reverse direction."""
+        with TemporaryDirectory() as tmp:
+            directory = prepare_dir(Path(tmp) / "parakeet")
+
+            for language in ("en", "de"):
+                with self.subTest(direction=language):
+                    with network_blocked():
+                        _, fake_cls = self.build_engine(directory, language)
+
+                    self.assertEqual(fake_cls.call_args.kwargs["model_dir"], directory)
+                    self.assertEqual(fake_cls.call_args.kwargs["language"], language)
+
+    def test_startup_never_calls_the_preparation_path(self) -> None:
+        """The acceptance criterion is about which functions run, not about
+        what the network happened to be doing, so it is asserted directly."""
+        with TemporaryDirectory() as tmp:
+            directory = prepare_dir(Path(tmp) / "parakeet")
+
+            with patch("live_translator.asr.model_store.download_model") as fake_download:
+                with network_blocked():
+                    self.build_engine(directory, "en")
+
+            fake_download.assert_not_called()
+
+    def test_unprepared_machine_fails_before_the_recognizer_is_built(self) -> None:
+        """Nothing expensive, and no audio device, should be reached first. The
+        pipeline builds its engine inside prepare(), which runs before capture
+        opens, so failing here is failing before any meeting audio exists."""
+        with TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "never-prepared"
+
+            with patch("live_translator.asr.parakeet_engine.ParakeetRecognizer") as fake_cls:
+                with network_blocked():
+                    with self.assertRaises(ModelNotPrepared):
+                        ParakeetAsr(AsrSettings(engine="parakeet", model_dir=str(missing)))
+
+            fake_cls.assert_not_called()
 
 
 class SilenceGateTests(unittest.TestCase):
@@ -197,12 +267,14 @@ class AsrRegistryTests(unittest.TestCase):
                 self.assertEqual(engine_class.ENGINE_NAME, name)
 
     def test_factory_builds_every_registered_engine(self) -> None:
-        for name in ASR_ENGINES:
-            with self.subTest(engine=name):
-                with patch("live_translator.asr.parakeet_engine.ParakeetRecognizer"):
-                    engine = create_asr(AsrSettings(engine=name))
+        with TemporaryDirectory() as tmp:
+            directory = prepare_dir(Path(tmp) / "parakeet")
+            for name in ASR_ENGINES:
+                with self.subTest(engine=name):
+                    with patch("live_translator.asr.parakeet_engine.ParakeetRecognizer"):
+                        engine = create_asr(AsrSettings(engine=name, model_dir=str(directory)))
 
-                self.assertEqual(type(engine).ENGINE_NAME, name)
+                    self.assertEqual(type(engine).ENGINE_NAME, name)
 
     def test_config_validation_accepts_every_registered_engine(self) -> None:
         for name in ASR_ENGINES:

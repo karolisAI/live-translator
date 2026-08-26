@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from live_translator.asr.base import TranscriptResult
+from live_translator.asr.model_store import verify_local_model
 from live_translator.asr.recognizer import DEFAULT_MODEL, ParakeetRecognizer
 from live_translator.config import AsrSettings
 from live_translator.errors import UnsupportedModel
@@ -25,9 +26,16 @@ class ParakeetAsr:
             raise ValueError(f"Unsupported ASR engine: {settings.engine}")
 
         self._settings = settings
+        # Before anything expensive, and -- because every pipeline builds its
+        # engine in `prepare()` -- before any audio device is opened. An
+        # unprepared machine fails here with instructions rather than at the
+        # first phrase of a meeting.
+        model_dir = verify_local_model(settings)
+
         try:
             self._recognizer = ParakeetRecognizer(
                 settings.model,
+                model_dir=model_dir,
                 quantization=settings.compute_type,
                 device=settings.device,
                 cpu_threads=settings.cpu_threads,

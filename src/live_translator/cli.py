@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from live_translator.asr import SUPPORTED_ASR_ENGINES, create_asr
+from live_translator.asr.model_store import download_model, model_dir, verify_local_model
 from live_translator.audio.route_test import test_output_to_input_route
 from live_translator.audio.devices import (
     DeviceRole,
@@ -17,7 +18,7 @@ from live_translator.audio.devices import (
 )
 from live_translator.audio.io import _audio_packages, _select_sample_rate
 from live_translator.config import apply_cli_overrides, load_config
-from live_translator.errors import MissingDependency
+from live_translator.errors import MissingDependency, ModelNotPrepared
 from live_translator.mt import TranslationEngine
 from live_translator.mt.argos_packages import install_argos_package, print_installed_argos_packages
 from live_translator.pipeline import LocalTranslatorPipeline
@@ -95,10 +96,22 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument(
         "--prepare-models",
         action="store_true",
-        help="also load the profile's speech model; translation and voice are "
+        help="also verify and load the profile's speech model from the local "
+        "model directory, without downloading; translation and voice are "
         "checked by any profile validation",
     )
     doctor.set_defaults(func=cmd_doctor)
+
+    prepare = subparsers.add_parser(
+        "prepare-models",
+        help="download the pinned speech model for offline use (needs internet)",
+        description="The only command that downloads a speech model. Every "
+        "other command, meeting mode included, reads what this leaves on disk "
+        "and never contacts a model host.",
+    )
+    prepare.add_argument("--profile", default="default", help="profile name to read the model settings from")
+    prepare.add_argument("--config", default=None, help="explicit profile/config path")
+    prepare.set_defaults(func=cmd_prepare_models)
 
     list_inputs = subparsers.add_parser("list-input-devices", help="list capture devices")
     list_inputs.set_defaults(func=lambda _args: print_devices("input"))
@@ -222,7 +235,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     config_path = _doctor_config_path(args)
     if args.prepare_models and config_path is None:
         raise ValueError(
-            "--prepare-models needs a profile to know which model to fetch; "
+            "--prepare-models needs a profile to know which model to check; "
             "pass --profile <name> or --config <path>."
         )
 
@@ -360,8 +373,36 @@ def _audio_device_detail(
 
 
 def _prepare_asr_model(config) -> str:
+    """Load the prepared model from disk. Never downloads.
+
+    `create_asr` verifies the local model directory before it loads, so a
+    machine that was never prepared fails here with the `prepare-models`
+    command in the message.
+    """
     create_asr(config.asr)
-    return f"{config.asr.model} loaded"
+    return f"{config.asr.model} loaded from {model_dir(config.asr)}"
+
+
+def cmd_prepare_models(args: argparse.Namespace) -> int:
+    if args.config is None:
+        config_path = default_profile_path(args.profile)
+        if not config_path.exists():
+            raise FileNotFoundError(
+                f"No '{args.profile}' profile yet at '{config_path}'. Create it first "
+                f"with: live-translator setup --profile {args.profile}"
+            )
+        args.config = str(config_path)
+    config = load_config(Path(args.config))
+    try:
+        directory = verify_local_model(config.asr)
+    except ModelNotPrepared:
+        directory = download_model(config.asr)
+    else:
+        print(f"Already prepared: {config.asr.model} in {directory}.")
+    print()
+    print("Meeting mode can now run without internet access:")
+    print(f"  live-translator meeting --config \"{args.config}\"")
+    return 0
 
 
 def cmd_setup(args: argparse.Namespace) -> int:

@@ -23,6 +23,14 @@ class AudioSettings:
 class AsrSettings:
     engine: str = DEFAULT_ASR_ENGINE
     model: str = DEFAULT_ASR_MODEL
+    model_dir: str | None = None
+    """Directory holding the prepared model; None uses `defaults.ASR_MODEL_DIR`.
+
+    Set it to point at a model staged somewhere else -- a shared read-only
+    location, or an engine other than the pinned one. It never causes a
+    download: `prepare-models` writes here, and every other code path only
+    reads.
+    """
     device: str = "cpu"
     compute_type: str = "int8"
     cpu_threads: int = 0
@@ -101,6 +109,7 @@ _SECTION_KEYS: dict[str, set[str]] = {
     "asr": {
         "engine",
         "model",
+        "model_dir",
         "device",
         "compute_type",
         "cpu_threads",
@@ -400,6 +409,7 @@ def _load_asr(raw: dict[str, Any]) -> AsrSettings:
     return AsrSettings(
         engine=_str(raw, "engine", DEFAULT_ASR_ENGINE),
         model=_str(raw, "model", DEFAULT_ASR_MODEL),
+        model_dir=_str_or_none(raw, "model_dir"),
         device=_str(raw, "device", "cpu"),
         compute_type=_str(raw, "compute_type", "int8"),
         cpu_threads=_nonnegative_int(raw, "cpu_threads", 0),

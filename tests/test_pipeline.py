@@ -1,11 +1,14 @@
 import io
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from live_translator.config import AppConfig, RealtimeSettings
+from live_translator.config import AppConfig, AsrSettings, RealtimeSettings
 from live_translator.asr.base import TranscriptResult
-from live_translator.errors import UntrustedRuntimePath
+from live_translator.errors import ModelNotPrepared, UntrustedRuntimePath
 from live_translator.pipeline import LocalTranslatorPipeline
 from live_translator.tts.speaker import RenderedSpeech
 
@@ -256,6 +259,28 @@ class PrintTranslationTests(unittest.TestCase):
             pipeline._print_translation("klarer Satz", "clear sentence", low_confidence=False)
 
         self.assertNotIn("[low confidence", buffer.getvalue())
+
+
+class OfflineStartupOrderTests(unittest.TestCase):
+    """`loopback` opens the microphone only after `prepare()` returns, so an
+    unprepared machine has to fail while there is still no meeting audio in the
+    process at all. Asserting the ordering is the only way to keep it: both
+    calls succeed independently, and only their sequence carries the property.
+    """
+
+    def test_missing_model_fails_before_any_audio_is_captured(self) -> None:
+        with TemporaryDirectory() as tmp:
+            config = replace(
+                AppConfig(), asr=AsrSettings(model_dir=str(Path(tmp) / "never-prepared"))
+            )
+            pipeline = LocalTranslatorPipeline(config)
+
+            with patch("live_translator.pipeline.record_mono") as fake_record:
+                with redirect_stdout(io.StringIO()):
+                    with self.assertRaises(ModelNotPrepared):
+                        pipeline.prepare()
+
+            fake_record.assert_not_called()
 
 
 if __name__ == "__main__":
