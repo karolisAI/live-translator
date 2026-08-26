@@ -7,8 +7,15 @@ from typing import Any
 
 from live_translator.config import TranslationSettings
 from live_translator.errors import MissingDependency
-from live_translator.mt.argos_runtime import configure_argos_runtime
-from live_translator.runtime import resolve_runtime_path
+from live_translator.mt.argos_runtime import configure_argos_runtime, validate_override_dir
+from live_translator.runtime import resolve_trusted_path
+
+_last_validated_xdg_data_home: str | None = None
+"""Cache for _argos_package_path()'s XDG_DATA_HOME check, same reasoning as
+argos_runtime's ARGOS_PACKAGES_DIR cache: this runs once per translated
+phrase, so without it a live meeting re-stats and re-prints the override on
+every phrase for the whole session, not just once. Keyed by value, not a
+one-shot flag, so a value that changes still gets validated."""
 
 
 class TranslationEngine:
@@ -82,18 +89,48 @@ class TranslationEngine:
 
 
 def _argos_package_path(source_language: str, target_language: str) -> Path:
+    global _last_validated_xdg_data_home
     package_name = f"{source_language}_{target_language}"
-    env_dir = os.getenv("ARGOS_PACKAGES_DIR")
     candidates = []
+
+    # Already validated in configure_argos_runtime(), which _prepare_argos()
+    # guarantees runs immediately before this -- not re-validated here.
+    env_dir = os.getenv("ARGOS_PACKAGES_DIR")
     if env_dir:
         candidates.append(Path(env_dir) / package_name)
-    candidates.append(resolve_runtime_path(Path("models") / "argos" / "packages" / package_name))
-    data_root = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    candidates.append(data_root / "argos-translate" / "packages" / package_name)
+
+    try:
+        candidates.append(
+            resolve_trusted_path(Path("models") / "argos" / "packages" / package_name)
+        )
+    except FileNotFoundError:
+        # Not bundled in this install/checkout -- fall through to the other
+        # candidates rather than aborting. If it exists but isn't trusted
+        # (UntrustedRuntimePath), that's not a benign case and propagates.
+        pass
 
     for candidate in candidates:
         if candidate.exists():
             return candidate
+
+    # XDG_DATA_HOME is validated here, lazily, rather than folded into
+    # `candidates` above -- validating it eagerly would raise on a merely
+    # malformed, unused value even when an earlier candidate already resolved
+    # the package, turning an incidental env var into a hard failure for a
+    # setup that was otherwise working.
+    xdg_env = os.getenv("XDG_DATA_HOME")
+    if xdg_env:
+        if xdg_env != _last_validated_xdg_data_home:
+            validate_override_dir("XDG_DATA_HOME", xdg_env)
+            _last_validated_xdg_data_home = xdg_env
+        data_root = Path(xdg_env)
+    else:
+        data_root = Path.home() / ".local" / "share"
+    xdg_candidate = data_root / "argos-translate" / "packages" / package_name
+    if xdg_candidate.exists():
+        return xdg_candidate
+    candidates.append(xdg_candidate)
+
     searched = ", ".join(str(candidate) for candidate in candidates)
     raise FileNotFoundError(
         f"Argos package not found for {source_language} -> {target_language}. "

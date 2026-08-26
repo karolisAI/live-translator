@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -10,7 +9,7 @@ from typing import Any
 from live_translator.audio.io import play_mono, read_wav_mono
 from live_translator.config import AudioSettings, TtsSettings
 from live_translator.errors import MissingDependency
-from live_translator.runtime import resolve_runtime_path
+from live_translator.runtime import resolve_trusted_path
 
 
 @dataclass(frozen=True)
@@ -134,13 +133,31 @@ class TtsSpeaker:
         if self._tts_settings.length_scale is not None:
             command.extend(["--length_scale", str(self._tts_settings.length_scale)])
 
-        completed = subprocess.run(
-            command,
-            input=text,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                input=text,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=self._tts_settings.piper_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            # subprocess.run already kills the child process itself before
+            # raising this -- nothing left to clean up, just translate it
+            # into a clear error instead of letting it propagate raw.
+            raise RuntimeError(
+                f"Piper ({piper_exe}) did not finish within "
+                f"{self._tts_settings.piper_timeout_seconds:.0f}s and was terminated."
+            ) from exc
+        except OSError as exc:
+            # A trusted, existing path can still fail to actually run --
+            # permissions, a corrupted binary, or (Windows) "not a valid
+            # Win32 application". subprocess.run raises OSError for these
+            # rather than returning a CompletedProcess, so the returncode
+            # check below never sees them; without this they'd propagate
+            # as a raw OSError instead of a clear, actionable error.
+            raise RuntimeError(f"Piper executable could not be run ({piper_exe}): {exc}") from exc
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.strip() or "Piper failed to synthesize audio.")
 
@@ -207,9 +224,7 @@ class TtsSpeaker:
                 f"Missing Piper executable '{self._tts_settings.piper_exe}'. Install Piper or set tts.piper_exe."
             )
 
-        model_path = resolve_runtime_path(self._tts_settings.model_path)
-        if not model_path.exists():
-            raise FileNotFoundError(f"Piper model not found: {model_path}")
+        model_path = resolve_trusted_path(self._tts_settings.model_path)
         config_path = piper_model_config_path(model_path)
         if not config_path.exists():
             raise FileNotFoundError(
@@ -223,10 +238,16 @@ class TtsSpeaker:
 
 
 def resolve_piper_exe(piper_exe: str) -> str | None:
-    path = resolve_runtime_path(piper_exe)
-    if path.exists():
-        return str(path)
-    return shutil.which(piper_exe)
+    """Resolve `piper_exe` to a trusted, existing path, or None if it isn't
+    found under any approved location. No longer falls back to searching
+    PATH -- PATH is not an approved runtime location. A resolved-but-
+    untrusted path (UntrustedRuntimePath) is deliberately not caught here
+    and propagates, since collapsing it into None would hide that the
+    executable does exist somewhere, just not somewhere this app trusts."""
+    try:
+        return str(resolve_trusted_path(piper_exe))
+    except FileNotFoundError:
+        return None
 
 
 def piper_model_config_path(model_path: str | Path) -> Path:

@@ -10,6 +10,11 @@ audio:
 asr:
   engine: parakeet
   model: nemo-parakeet-tdt-0.6b-v3
+  # Where `prepare-models` put the model. Unset uses models/asr/<model> in the
+  # checkout, or %LOCALAPPDATA%/LiveTranslator/models/asr/<model> for an
+  # installed build. Meeting mode reads this directory and never downloads, so
+  # a missing or incomplete one is a startup error, not a fetch.
+  # model_dir: null
   device: cpu
   compute_type: int8
   cpu_threads: 8
@@ -40,6 +45,7 @@ tts:
   piper_exe: tools/piper/piper.exe
   speaker: null
   length_scale: 1.0
+  piper_timeout_seconds: 30.0
 
 chunking:
   mode: vad

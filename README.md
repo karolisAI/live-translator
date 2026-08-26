@@ -42,7 +42,7 @@ For an installation from `LiveTranslatorSetup.exe`:
 - Windows 10 or Windows 11
 - A microphone and headset
 - [VB-CABLE](https://vb-audio.com/Cable/) or an equivalent virtual cable
-- Internet access during the first model preparation
+- Internet access during the one-off `prepare-models` step, and only then
 
 The installer bundles the application, Python runtime, Argos translation
 models, Piper runtime, and the English and German voices. Python does not need
@@ -68,6 +68,10 @@ models/tts/de_DE-thorsten-medium.onnx
 models/tts/de_DE-thorsten-medium.onnx.json
 models/tts/en_US-hfc_male-medium.onnx
 models/tts/en_US-hfc_male-medium.onnx.json
+models/asr/parakeet-tdt-0.6b-v3/config.json
+models/asr/parakeet-tdt-0.6b-v3/vocab.txt
+models/asr/parakeet-tdt-0.6b-v3/encoder-model.int8.onnx
+models/asr/parakeet-tdt-0.6b-v3/decoder_joint-model.int8.onnx
 tools/piper/piper.exe
 tools/piper/piper_phonemize.dll
 tools/piper/onnxruntime.dll
@@ -114,9 +118,12 @@ the Windows default physical microphone and finds a matching VB-CABLE playback
 and recording pair without storing fragile device indices.
 
 Download the speech model once while the machine is online, then verify
-translation and audio routing:
+translation and audio routing. `prepare-models` is the only command that
+downloads anything; everything below it, meeting mode included, reads what it
+leaves on disk:
 
 ```powershell
+& $LT prepare-models --profile en-de
 & $LT doctor --config "$Profiles\en-de.yaml" --prepare-models
 & $LT doctor --config "$Profiles\de-en.yaml" --prepare-models
 & $LT translate-text --source-language en --target-language de --text "Good morning"
@@ -199,11 +206,52 @@ asr:
   source_language: en
 ```
 
-The first run downloads the model into the Hugging Face cache and needs internet
-access. `doctor --config <profile> --prepare-models` does that download ahead of
-time; later runs are offline. `--prepare-models` reads the model name from the
-profile, so it needs `--config <path>` or `--profile <name>` and fails without
-one.
+### Model Preparation
+
+Meeting mode never downloads. The model is fetched once, by an explicit
+command, and every later run reads it off disk:
+
+```powershell
+live-translator prepare-models --profile en-de
+```
+
+Both directions share one model, so this is run once per machine rather than
+once per profile. Re-running it on a prepared machine reports what is already
+there and makes no network request.
+
+| | |
+| --- | --- |
+| Source | [istupakov/parakeet-tdt-0.6b-v3-onnx](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx) |
+| Revision | `8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce` |
+| Storage, source checkout | `models/asr/parakeet-tdt-0.6b-v3/` |
+| Storage, installed build | `%LOCALAPPDATA%\LiveTranslator\models\asr\parakeet-tdt-0.6b-v3\` |
+| Size | about 640 MB for the int8 files |
+
+The revision is a commit hash rather than `main`, so two machines prepared from
+the same application build get the same weights. `prepare-models` records it in
+`revision.txt` next to the model, and startup refuses a directory stamped with a
+different one.
+
+Only the files matching `asr.compute_type` are fetched. The default `int8` build
+needs `encoder-model.int8.onnx`, `decoder_joint-model.int8.onnx`, `vocab.txt`
+and `config.json`; switching to float32 means preparing again, because those are
+different files.
+
+Set `asr.model_dir` to read the model from somewhere else -- a shared read-only
+location, or one staged by IT rather than by this command. A directory staged
+that way needs no `revision.txt`.
+
+### Offline Guarantees
+
+Meeting startup validates the model directory before it opens the microphone,
+so an unprepared machine fails with the command above rather than part way
+through a meeting. The model is then loaded by handing `onnx-asr` that
+directory, which puts its resolver in offline mode and takes its download path
+out of reach -- rather than leaving it available and hoping the cache hits.
+
+`doctor --prepare-models` verifies and loads the prepared model without
+downloading. It reads the model name from the profile, so it needs
+`--config <path>` or `--profile <name>` and fails without one.
 
 The recognizer itself is in
 [src/live_translator/asr/recognizer.py](src/live_translator/asr/recognizer.py)
@@ -328,7 +376,8 @@ live-translator doctor
 
 Add `--profile <name>` (or `--config <path>`) to also validate that profile's
 devices, translation and voice; add `--prepare-models` to load its speech model
-as well.
+from the local model directory as well. That flag verifies and loads; it never
+downloads. Use `prepare-models` for that.
 
 If a device fails to open, try each one and see which ones actually work. The
 output probe plays silence, so it is safe to run during a call:
@@ -373,9 +422,10 @@ the complete PyInstaller application folder; recipients do not also need the
 `dist\LiveTranslator` directory. Update `MyAppVersion` in
 `packaging\windows\LiveTranslator.iss` before producing a release build.
 
-The speech model remains in each Windows user's Hugging Face cache, so run
-`doctor --config <profile> --prepare-models` online once on every target machine
-before relying on offline operation.
+The installer does not carry the speech model, so run `prepare-models` online
+once on every target machine before relying on offline operation. An installed
+build stores it under `%LOCALAPPDATA%\LiveTranslator\models\asr`, beside the
+profiles, rather than in the read-only installation directory.
 
 ## Verification
 

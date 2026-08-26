@@ -50,8 +50,13 @@ oldest pending phrase is skipped and the operator sees a warning.
 
 After dependencies and models are installed, the speech recognition,
 translation, and synthesis path runs locally. It does not require a cloud API
-key. Named Parakeet models are loaded from the Windows user's local
-Hugging Face cache.
+key.
+
+The Parakeet model is fetched by one explicit `prepare-models` command and read
+from a local directory afterwards. A meeting cannot trigger a download or a
+model update: startup checks the prepared files before opening the microphone
+and fails with preparation instructions if they are missing. Preparation is the
+only point at which the application contacts an external model host.
 
 Two profiles are generated because direction and output voice are explicit:
 

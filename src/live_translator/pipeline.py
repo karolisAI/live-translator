@@ -19,6 +19,7 @@ from live_translator.diagnostics import (
     session_directory_name,
     sweep,
 )
+from live_translator.errors import UntrustedRuntimePath
 from live_translator.mt import TranslationEngine
 from live_translator.realtime import CapturedSegment, RealtimeMeetingWorkers
 from live_translator.tts import RenderedSpeech, TtsSpeaker
@@ -31,6 +32,14 @@ class LocalTranslatorPipeline:
         self._translator: TranslationEngine | None = None
         self._speaker: TtsSpeaker | None = None
         self._verbose = False
+        self._tts_disabled_reason: str | None = None
+        """Set once, on UntrustedRuntimePath from speaker.render().
+
+        render() runs synthesis on the recognition worker (see
+        _process_live_segment's docstring), so this has to live here, not on
+        the playback loop -- a mistrusted path never actually reaches
+        playback, it fails during rendering, one worker earlier.
+        """
         self._capture_limits: CaptureLimits | None = None
         self._show_text = False
 
@@ -242,7 +251,14 @@ class LocalTranslatorPipeline:
         self._print_asr_rejections(transcript)
         if self._show_text:
             self._print_translation(transcript.text, translated, transcript.low_confidence)
-        rendered = speaker.render(translated) if translated else None
+        # low_confidence is a transcript-only signal, not a TTS gate: on the
+        # 100-clip calibration set, most flagged EN segments were near-misses
+        # (5 of 7 had WER under 0.19, often a single wrong word), not
+        # meaning-changing errors, and avg_logprob doesn't separate the two
+        # cleanly enough (r=-0.52 on English) to silence one without also
+        # silencing the other. Missing audio for a mostly-correct phrase is
+        # its own cost, not a free safety win.
+        rendered = self._render_speech(speaker, translated, segment.number) if translated else None
         if self._verbose:
             queue_seconds = max(0.0, started - segment.captured_at)
             print(
@@ -254,6 +270,41 @@ class LocalTranslatorPipeline:
                 segment, transcript.low_confidence, perf_counter() - started
             )
         return rendered
+
+    def _render_speech(
+        self, speaker: TtsSpeaker, text: str, segment_number: int
+    ) -> RenderedSpeech | None:
+        """Render text to audio, or None if that fails or is disabled for the session.
+
+        This runs on the recognition worker (see _process_live_segment's
+        docstring), so an uncaught exception here would otherwise be fatal to
+        the whole meeting via _recognition_loop's outer catch -- the wrong
+        blast radius for a synthesis-only failure. UntrustedRuntimePath
+        permanently disables further attempts, since a mistrusted path
+        resolves the same way again and retrying would only repeat the same
+        failure; anything else (a timeout, a corrupted binary) just skips
+        this one phrase and keeps trying on the next, since those can be
+        transient.
+        """
+        if self._tts_disabled_reason is not None:
+            return None
+        try:
+            return speaker.render(text)
+        except UntrustedRuntimePath as exc:
+            self._tts_disabled_reason = str(exc)
+            print(
+                f"SECURITY WARNING: phrase {segment_number} tried to run a speech "
+                f"executable outside every trusted location ({exc}). Spoken "
+                f"playback is disabled for the rest of this meeting; "
+                f"transcription and translation continue normally."
+            )
+            return None
+        except Exception as exc:
+            print(
+                f"Warning: speech synthesis failed for phrase {segment_number}: "
+                f"{exc}. Continuing without spoken output for this phrase."
+            )
+            return None
 
     def _create_realtime_workers(
         self,
@@ -317,14 +368,16 @@ class LocalTranslatorPipeline:
     ) -> None:
         source = self._config.translation.source_language.upper()
         target = self._config.translation.target_language.upper()
-        # A flagged segment is not rejected -- it's still translated and shown
-        # in full, just marked as one the recognizer itself was uncertain
-        # about, favoring a visible-but-quiet marker over silently dropping
-        # possibly-correct content. See asr.flag_log_prob_threshold.
+        # A flagged segment is not rejected -- it's still translated, shown,
+        # and spoken in full (see _process_live_segment), just marked as one
+        # the recognizer itself was uncertain about. On both lines, not just
+        # the source one: someone reading only the target-language line
+        # deserves the same warning as someone reading the source line. See
+        # asr.flag_log_prob_threshold.
         marker = " [low confidence]" if low_confidence else ""
         print()
         print(f"{source}{marker}: {source_text}")
-        print(f"{target}: {target_text}")
+        print(f"{target}{marker}: {target_text}")
 
     def _announce_text_display(self) -> None:
         """Say once that the conversation will be on screen.

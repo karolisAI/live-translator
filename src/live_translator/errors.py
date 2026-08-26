@@ -15,9 +15,30 @@ class UnsupportedModel(ValueError):
     """
 
 
+class UntrustedRuntimePath(RuntimeError):
+    """A resolved runtime path exists, but not inside an approved location.
+
+    Distinct from FileNotFoundError (nothing exists anywhere approved) --
+    this means something was found, just not somewhere this app trusts,
+    which usually points at a misconfigured path rather than a missing
+    install. Subclasses RuntimeError so it's caught wherever MissingDependency
+    already is.
+    """
+
+
 def require_package(module_name: str, install_name: str | None = None) -> None:
     if importlib.util.find_spec(module_name) is None:
         package = install_name or module_name
         raise MissingDependency(
             f"Missing dependency '{package}'. Install dependencies with: python -m pip install -e ."
         )
+
+
+class ModelNotPrepared(FileNotFoundError):
+    """The pinned Parakeet model is not present in the local model directory.
+
+    Subclasses `FileNotFoundError` so the CLI's existing handler reports it as
+    a plain error, and so it is not mistaken for a bug: a machine that was
+    never prepared is a supported state with a documented fix, which the
+    message carries.
+    """
