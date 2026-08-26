@@ -205,6 +205,12 @@ def add_tts_options(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Piper duration scale; 1.0 uses a natural voice pace",
     )
+    parser.add_argument(
+        "--piper-timeout",
+        type=float,
+        default=None,
+        help="seconds to wait for Piper before treating it as hung (default 30.0)",
+    )
 
 
 def add_chunker_options(parser: argparse.ArgumentParser) -> None:
@@ -556,6 +562,7 @@ def build_config(args: argparse.Namespace):
         tts_model_path=getattr(args, "tts_model", None),
         piper_exe=getattr(args, "piper_exe", None),
         tts_length_scale=getattr(args, "tts_length_scale", None),
+        piper_timeout_seconds=getattr(args, "piper_timeout", None),
         log_prob_threshold=getattr(args, "log_prob_threshold", None),
         flag_log_prob_threshold=getattr(args, "flag_log_prob_threshold", None),
         chunker_mode=getattr(args, "chunker", None),

@@ -34,7 +34,7 @@ from live_translator.defaults import (
     DEFAULT_ASR_MODEL,
 )
 from live_translator.errors import MissingDependency, ModelNotPrepared
-from live_translator.runtime import resolve_runtime_path, runtime_roots, user_data_dir
+from live_translator.runtime import approved_runtime_roots, user_data_dir
 
 __all__ = [
     "REVISION_FILE",
@@ -69,13 +69,21 @@ def model_dir(settings: Any) -> Path:
     """
     configured = Path(getattr(settings, "model_dir", None) or ASR_MODEL_DIR)
     if configured.is_absolute():
+        # An explicit absolute directory is honoured as given -- including a
+        # model staged by IT outside the app's own roots. This is not routed
+        # through the trusted-path resolver on purpose: the model is data, not
+        # an executable, and refusing an external absolute location would break
+        # the supported "point at a shared/staged model" path.
         return configured
 
-    # An already-prepared directory wins wherever it sits, so a packaged build
-    # that ships one is found the same way models/argos and models/tts are.
-    found = Path(resolve_runtime_path(configured))
-    if found.is_absolute():
-        return found
+    # An already-prepared directory wins wherever it sits among the approved
+    # runtime roots -- never the current working directory -- so a packaged
+    # build that ships one is found the same way models/argos and models/tts
+    # are, without a checkout the shell happened to launch from standing in.
+    for root in approved_runtime_roots():
+        candidate = root / configured
+        if candidate.is_dir():
+            return candidate.resolve()
     return _preparation_root() / configured
 
 
@@ -94,7 +102,11 @@ def _preparation_root() -> Path:
     """
     if getattr(sys, "frozen", False):
         return user_data_dir()
-    return runtime_roots()[-1]
+    # The source checkout root: this file is <repo>/src/live_translator/asr/
+    # model_store.py, so the repository is four parents up. Computed directly
+    # rather than via a runtime-root list so a dev override or root ordering
+    # can never redirect where preparation writes.
+    return Path(__file__).resolve().parents[3]
 
 
 def required_patterns(quantization: str | None) -> tuple[str, ...]:

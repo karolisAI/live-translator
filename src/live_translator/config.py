@@ -56,6 +56,11 @@ class TtsSettings:
     piper_exe: str = "piper"
     speaker: str | None = None
     length_scale: float | None = None
+    piper_timeout_seconds: float = 30.0
+    """Bounds a hung Piper process. 30s is generous headroom over the
+    ~3.6s worst-case cold-cache first synthesis measured in warm_up()'s
+    docstring -- long enough not to false-trigger, short enough to still
+    fail a stuck meeting phrase rather than hang it indefinitely."""
 
 
 @dataclass(frozen=True)
@@ -115,7 +120,15 @@ _SECTION_KEYS: dict[str, set[str]] = {
         "min_segment_chars",
     },
     "translation": {"engine", "source_language", "target_language"},
-    "tts": {"engine", "voice", "model_path", "piper_exe", "speaker", "length_scale"},
+    "tts": {
+        "engine",
+        "voice",
+        "model_path",
+        "piper_exe",
+        "speaker",
+        "length_scale",
+        "piper_timeout_seconds",
+    },
     "chunking": {
         "mode",
         "frame_ms",
@@ -184,6 +197,7 @@ def apply_cli_overrides(
     tts_model_path: str | None = None,
     piper_exe: str | None = None,
     tts_length_scale: float | None = None,
+    piper_timeout_seconds: float | None = None,
     log_prob_threshold: float | None = None,
     flag_log_prob_threshold: float | None = None,
     chunker_mode: str | None = None,
@@ -230,6 +244,8 @@ def apply_cli_overrides(
         tts = replace(tts, piper_exe=piper_exe)
     if tts_length_scale is not None:
         tts = replace(tts, length_scale=tts_length_scale)
+    if piper_timeout_seconds is not None:
+        tts = replace(tts, piper_timeout_seconds=piper_timeout_seconds)
     if log_prob_threshold is not None:
         asr = replace(asr, log_prob_threshold=log_prob_threshold)
     if flag_log_prob_threshold is not None:
@@ -318,6 +334,12 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("tts.model_path is required when tts.engine is 'piper'")
     if config.tts.length_scale is not None and config.tts.length_scale <= 0.0:
         raise ValueError("tts.length_scale must be positive")
+    # Not `<= 0.0`: NaN compares False against everything, including this,
+    # so `piper_timeout_seconds: .nan` would pass validation and reach
+    # subprocess.run(timeout=nan) on the first phrase instead of failing
+    # cleanly at startup.
+    if not (config.tts.piper_timeout_seconds > 0):
+        raise ValueError("tts.piper_timeout_seconds must be positive")
 
     if config.chunking.mode.lower() not in {"fixed", "vad", "rolling"}:
         raise ValueError("chunking.mode must be 'fixed', 'vad', or 'rolling'")
@@ -415,6 +437,7 @@ def _load_tts(raw: dict[str, Any]) -> TtsSettings:
         piper_exe=_str(raw, "piper_exe", "piper"),
         speaker=_str_or_none(raw, "speaker"),
         length_scale=_float_or_none(raw, "length_scale"),
+        piper_timeout_seconds=_float(raw, "piper_timeout_seconds", 30.0),
     )
 
 
@@ -501,7 +524,11 @@ def _float(raw: dict[str, Any], key: str, default: float) -> float:
         parsed = float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{key} must be a number") from exc
-    if parsed <= 0:
+    # Not `parsed <= 0`: every comparison with NaN is False, including
+    # `nan <= 0`, so that check lets `.nan` (valid PyYAML float syntax)
+    # through as if it were positive. `not (parsed > 0)` catches zero,
+    # negatives, and NaN the same way.
+    if not (parsed > 0):
         raise ValueError(f"{key} must be positive")
     return parsed
 

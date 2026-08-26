@@ -15,6 +15,17 @@ class UnsupportedModel(ValueError):
     """
 
 
+class UntrustedRuntimePath(RuntimeError):
+    """A resolved runtime path exists, but not inside an approved location.
+
+    Distinct from FileNotFoundError (nothing exists anywhere approved) --
+    this means something was found, just not somewhere this app trusts,
+    which usually points at a misconfigured path rather than a missing
+    install. Subclasses RuntimeError so it's caught wherever MissingDependency
+    already is.
+    """
+
+
 def require_package(module_name: str, install_name: str | None = None) -> None:
     if importlib.util.find_spec(module_name) is None:
         package = install_name or module_name
