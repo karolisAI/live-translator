@@ -74,8 +74,10 @@ class RealtimeMeetingWorkers:
         segment = CapturedSegment(number=number, audio=audio, captured_at=perf_counter())
         dropped = self._offer_latest(self._segments, segment)
         if dropped:
+            # Indented to sit under the per-phrase progress lines the pipeline
+            # prints, so the phrase stream reads as one column.
             self._on_warning(
-                "Warning: recognition fell behind; skipped the oldest queued phrase to stay live."
+                "         recognition fell behind, oldest queued phrase skipped"
             )
         return number
 
@@ -114,7 +116,7 @@ class RealtimeMeetingWorkers:
                         dropped = self._offer_latest(self._playback, (item.number, translated))
                         if dropped:
                             self._on_warning(
-                                "Warning: speech playback fell behind; skipped the oldest queued translation."
+                                "         playback fell behind, oldest queued translation skipped"
                             )
                 finally:
                     self._segments.task_done()
@@ -133,8 +135,8 @@ class RealtimeMeetingWorkers:
                         self._speak(text)
                     except Exception as exc:
                         self._on_warning(
-                            f"Warning: translated speech playback failed for phrase {_number}: "
-                            f"{exc}. Continuous listening remains active."
+                            f"         playback failed for phrase {_number}: {exc}. "
+                            "Listening remains active."
                         )
                 finally:
                     self._playback.task_done()

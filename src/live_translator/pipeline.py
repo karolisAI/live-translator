@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Thread
 from time import perf_counter
 
 from live_translator.asr import AsrEngine, TranscriptResult, create_asr
@@ -9,6 +10,15 @@ from live_translator.audio.devices import describe_device_selection
 from live_translator.audio.io import play_mono, record_mono, write_wav
 from live_translator.audio.rolling import RollingSpeechChunker
 from live_translator.config import AppConfig
+from live_translator.diagnostics import (
+    NOTE_SUFFIX,
+    CaptureLimits,
+    capture_warning,
+    resolve_capture_dir,
+    segment_audio_name,
+    session_directory_name,
+    sweep,
+)
 from live_translator.errors import UntrustedRuntimePath
 from live_translator.mt import TranslationEngine
 from live_translator.realtime import CapturedSegment, RealtimeMeetingWorkers
@@ -30,6 +40,8 @@ class LocalTranslatorPipeline:
         the playback loop -- a mistrusted path never actually reaches
         playback, it fails during rendering, one worker earlier.
         """
+        self._capture_limits: CaptureLimits | None = None
+        self._show_text = False
 
     def prepare(self, *, include_tts: bool = True) -> None:
         started = perf_counter()
@@ -119,16 +131,20 @@ class LocalTranslatorPipeline:
         debug_audio_dir: str | Path | None = None,
         *,
         verbose: bool = False,
+        diagnostics: bool = False,
+        show_text: bool = False,
     ) -> None:
         self._verbose = verbose
+        self._show_text = show_text
         self._print_audio_route()
         self.prepare()
         translator = self._get_translator()
         speaker = self._get_speaker()
-        debug_dir = Path(debug_audio_dir) if debug_audio_dir else None
-        if debug_dir is not None:
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            print(f"Writing debug audio chunks to {debug_dir}")
+        debug_dir = self._start_diagnostics(
+            diagnostics=diagnostics, debug_audio_dir=debug_audio_dir
+        )
+        if debug_dir is None:
+            self._expire_old_diagnostics()
         chunker = (chunker_mode or self._config.chunking.mode).lower()
         if chunker in {"phrase", "speech"}:
             chunker = "vad"
@@ -139,6 +155,7 @@ class LocalTranslatorPipeline:
         target = self._config.translation.target_language.upper()
         print(f"Direction: {source} -> {target}")
         print("Live translation active. Listening continuously between phrases.")
+        self._announce_text_display()
         if self._verbose and chunker == "vad":
             print(
                 f"Chunker=vad silence={self._config.chunking.silence_ms}ms "
@@ -232,7 +249,8 @@ class LocalTranslatorPipeline:
         translated = translator.translate(transcript.text)
         self._write_debug_note(debug_wav, transcript.text, translated)
         self._print_asr_rejections(transcript)
-        self._print_translation(transcript.text, translated, transcript.low_confidence)
+        if self._show_text:
+            self._print_translation(transcript.text, translated, transcript.low_confidence)
         # low_confidence is a transcript-only signal, not a TTS gate: on the
         # 100-clip calibration set, most flagged EN segments were near-misses
         # (5 of 7 had WER under 0.19, often a single wrong word), not
@@ -246,6 +264,10 @@ class LocalTranslatorPipeline:
             print(
                 f"Segment {segment.number}: queue={queue_seconds:.2f}s "
                 f"recognition+translation+synthesis={perf_counter() - started:.2f}s"
+            )
+        elif not self._show_text:
+            self._print_phrase_progress(
+                segment, transcript.low_confidence, perf_counter() - started
             )
         return rendered
 
@@ -357,6 +379,38 @@ class LocalTranslatorPipeline:
         print(f"{source}{marker}: {source_text}")
         print(f"{target}{marker}: {target_text}")
 
+    def _announce_text_display(self) -> None:
+        """Say once that the conversation will be on screen.
+
+        Showing it is a deliberate choice, but the consequence is easy to
+        forget: the terminal keeps scrollback, and a screen share shows it
+        live. Not printed under --verbose, whose output other tooling parses.
+        """
+        if self._show_text and not self._verbose:
+            print(
+                "Showing transcripts and translations on screen. They remain in "
+                "the terminal scrollback and are visible on a screen share."
+            )
+
+    def _print_phrase_progress(
+        self, segment: CapturedSegment, low_confidence: bool, elapsed_seconds: float
+    ) -> None:
+        """Confirm a phrase was handled without saying what it was.
+
+        Normal operation must not print meeting content, but it cannot print
+        nothing either: translated speech goes to the virtual cable rather than
+        the user's own headphones, so they never hear it. Without this line a
+        muted microphone and a working session look identical until the other
+        side says they heard silence. Number, length and elapsed time carry no
+        content and cannot reconstruct any.
+        """
+        marker = "    low confidence" if low_confidence else ""
+        audio_seconds = len(segment.audio) / self._config.audio.sample_rate
+        print(
+            f"Phrase {segment.number:>3}    {audio_seconds:.1f}s    "
+            f"ready in {elapsed_seconds:.1f}s{marker}"
+        )
+
     def _print_asr_rejections(self, result: TranscriptResult) -> None:
         if not self._verbose or not result.rejected_segments:
             return
@@ -365,17 +419,88 @@ class LocalTranslatorPipeline:
             reasons += ", ..."
         print(f"ASR rejected {result.rejected_segments} low-confidence/no-speech segment(s): {reasons}")
 
+    def _start_diagnostics(
+        self, *, diagnostics: bool, debug_audio_dir: str | Path | None
+    ) -> Path | None:
+        """Decide whether this session captures meeting content, and where.
+
+        Off unless somebody asked for it: the flag, the config setting, or an
+        explicit path, which implies the flag so existing habits keep working.
+        Returning None is what makes a normal meeting write nothing at all --
+        the directory is not created, so there is no empty folder implying
+        something was recorded. A directory that cannot be created, or a path
+        resolve_capture_dir refuses (e.g. a relative path that climbs outside
+        the per-user directory with `..`), returns None too: on a locked-down
+        machine, losing diagnostics is an inconvenience and losing the meeting
+        is not.
+        """
+        settings = self._config.diagnostics
+        if not (diagnostics or settings.enabled or debug_audio_dir):
+            return None
+
+        try:
+            root = resolve_capture_dir(settings, debug_audio_dir)
+            capture_dir = root / session_directory_name()
+            capture_dir.mkdir(parents=True, exist_ok=True)
+        except (OSError, ValueError) as exc:
+            print(
+                f"Diagnostic capture could not start: {exc}. "
+                "Continuing without it; the meeting is not affected."
+            )
+            return None
+
+        self._capture_limits = CaptureLimits(settings, root, capture_dir)
+        print(capture_warning(capture_dir, settings))
+        return capture_dir
+
+    def _expire_old_diagnostics(self) -> None:
+        """Age out old captures even when this session captures nothing.
+
+        Someone who switches capture on once and never again would otherwise
+        keep that content forever. Runs off the main thread because a full
+        folder takes about 1.8 seconds to walk on this hardware, and nothing
+        should delay a meeting starting.
+        """
+        settings = self._config.diagnostics
+        if settings.retention_days <= 0:
+            return
+        try:
+            root = resolve_capture_dir(settings)
+        except ValueError:
+            return
+        if not root.is_dir():
+            return
+
+        Thread(
+            target=lambda: sweep(settings, root),
+            name="live-translator-diagnostics-sweep",
+            daemon=True,
+        ).start()
+
+    def _note_capture(self, path: Path | None) -> None:
+        """Account for a written artifact and report any cleanup it triggered."""
+        if self._capture_limits is None:
+            return
+        result = self._capture_limits.record(path)
+        if result:
+            print(
+                f"Diagnostics reached its {self._config.diagnostics.max_total_mb} MB limit: "
+                f"removed the {result.files_removed} oldest file(s), "
+                f"{result.bytes_freed / 1024 / 1024:.1f} MB freed."
+            )
+
     def _write_debug_audio(self, debug_dir: Path | None, segment_number: int, audio) -> Path | None:
         if debug_dir is None:
             return None
-        path = debug_dir / f"segment-{segment_number:04d}.wav"
+        path = debug_dir / segment_audio_name(segment_number)
         write_wav(path, audio, self._config.audio.sample_rate)
+        self._note_capture(path)
         return path
 
     def _write_debug_note(self, wav_path: Path | None, source: str, target: str) -> None:
         if wav_path is None:
             return
-        note_path = wav_path.with_suffix(".txt")
+        note_path = wav_path.with_suffix(NOTE_SUFFIX)
         note_path.write_text(
             "\n".join(
                 [
@@ -388,6 +513,7 @@ class LocalTranslatorPipeline:
             ),
             encoding="utf-8",
         )
+        self._note_capture(note_path)
 
     def _print_audio_route(self) -> None:
         print("Audio routing:")

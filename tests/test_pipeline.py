@@ -64,9 +64,10 @@ class PipelineTests(unittest.TestCase):
             text="source", language="en", duration_seconds=1.0, inference_seconds=0.1
         )
         with patch.object(pipeline, "_transcribe_audio_if_safe", return_value=transcript):
-            result = pipeline._process_live_segment(
-                FakeSegment(), FakeTranslator(), speaker, None
-            )
+            with redirect_stdout(io.StringIO()):
+                result = pipeline._process_live_segment(
+                    FakeSegment(), FakeTranslator(), speaker, None
+                )
 
         self.assertEqual(speaker.rendered, ["target: source"])
         self.assertIsInstance(result, RenderedSpeech)
@@ -230,6 +231,86 @@ class TranslateOnceTests(unittest.TestCase):
         self.assertEqual(speaker.spoken, ["target: source"])
 
 
+class NormalModeOutputTests(unittest.TestCase):
+    """A normal meeting must not print what was said. Diagnostics privacy: the
+    console is the one place meeting content leaked without anyone opting in,
+    and terminal scrollback keeps it for the rest of the session."""
+
+    def _run_segment(
+        self, *, verbose: bool, show_text: bool = False, low_confidence: bool = False
+    ) -> str:
+        pipeline = LocalTranslatorPipeline(AppConfig())
+        pipeline._verbose = verbose
+        pipeline._show_text = show_text
+
+        class FakeTranslator:
+            def translate(self, text: str) -> str:
+                return "geheime Übersetzung"
+
+        class FakeSegment:
+            number = 7
+            audio = [0.0] * 16000
+            captured_at = 0.0
+
+        transcript = TranscriptResult(
+            text="confidential source",
+            language="en",
+            duration_seconds=1.0,
+            inference_seconds=0.1,
+            low_confidence=low_confidence,
+        )
+        buffer = io.StringIO()
+        with patch.object(pipeline, "_transcribe_audio_if_safe", return_value=transcript):
+            with redirect_stdout(buffer):
+                pipeline._process_live_segment(
+                    FakeSegment(), FakeTranslator(), FakeSpeaker(), None
+                )
+        return buffer.getvalue()
+
+    def test_normal_mode_prints_neither_source_nor_target(self) -> None:
+        output = self._run_segment(verbose=False)
+
+        self.assertNotIn("confidential source", output)
+        self.assertNotIn("geheime Übersetzung", output)
+
+    def test_normal_mode_still_confirms_the_phrase_was_handled(self) -> None:
+        """Without this the user has no signal at all: translated speech goes to
+        the virtual cable, not to their own headphones."""
+        output = self._run_segment(verbose=False)
+
+        self.assertIn("Phrase", output)
+        self.assertIn("7", output)
+
+    def test_low_confidence_is_marked_without_showing_the_text(self) -> None:
+        output = self._run_segment(verbose=False, low_confidence=True)
+
+        self.assertIn("low confidence", output)
+        self.assertNotIn("confidential source", output)
+
+    def test_verbose_alone_does_not_print_source_or_target(self) -> None:
+        """--verbose is operational telemetry -- audio gates, per-segment
+        timing -- not a second way to display meeting content. Someone
+        troubleshooting VAD during a confidential meeting should not retain
+        the conversation in scrollback without asking for it specifically."""
+        output = self._run_segment(verbose=True, show_text=False)
+
+        self.assertNotIn("confidential source", output)
+        self.assertNotIn("geheime Übersetzung", output)
+
+    def test_verbose_alone_still_shows_its_own_telemetry(self) -> None:
+        """The fix above must not silence --verbose entirely, only the text."""
+        output = self._run_segment(verbose=True, show_text=False)
+
+        self.assertIn("Segment 7:", output)
+
+    def test_verbose_and_show_text_together_shows_the_text(self) -> None:
+        """Asking for both must not cancel either one out."""
+        output = self._run_segment(verbose=True, show_text=True)
+
+        self.assertIn("confidential source", output)
+        self.assertIn("geheime Übersetzung", output)
+
+
 class PrintTranslationTests(unittest.TestCase):
     """low_confidence is a marker on an otherwise fully shown segment, not a
     second rejection -- both source and target text always print in full."""
@@ -281,6 +362,91 @@ class OfflineStartupOrderTests(unittest.TestCase):
                         pipeline.prepare()
 
             fake_record.assert_not_called()
+
+
+class ShowTextTests(unittest.TestCase):
+    """A deliberate way to watch the conversation, without the debug output.
+
+    Normal mode shows no content and --verbose shows content buried in gate
+    lines and per-segment timings, so watching a meeting meant reading roughly
+    seven lines per phrase to find three. This flag restores the old readable
+    view as an explicit act.
+    """
+
+    def _run_segment(self, *, verbose: bool, show_text: bool) -> str:
+        pipeline = LocalTranslatorPipeline(AppConfig())
+        pipeline._verbose = verbose
+        pipeline._show_text = show_text
+
+        class FakeTranslator:
+            def translate(self, text: str) -> str:
+                return "geheime Uebersetzung"
+
+        class FakeSegment:
+            number = 4
+            audio = [0.0] * 16000
+            captured_at = 0.0
+
+        transcript = TranscriptResult(
+            text="confidential source",
+            language="en",
+            duration_seconds=1.0,
+            inference_seconds=0.1,
+        )
+        buffer = io.StringIO()
+        with patch.object(pipeline, "_transcribe_audio_if_safe", return_value=transcript):
+            with redirect_stdout(buffer):
+                pipeline._process_live_segment(
+                    FakeSegment(), FakeTranslator(), FakeSpeaker(), None
+                )
+        return buffer.getvalue()
+
+    def test_show_text_prints_the_conversation(self) -> None:
+        output = self._run_segment(verbose=False, show_text=True)
+
+        self.assertIn("confidential source", output)
+        self.assertIn("geheime Uebersetzung", output)
+
+    def test_show_text_replaces_the_phrase_counter(self) -> None:
+        """Both would be redundant: the text itself shows the pipeline is alive."""
+        output = self._run_segment(verbose=False, show_text=True)
+
+        self.assertNotIn("Phrase", output)
+
+    def test_show_text_does_not_bring_the_debug_output_with_it(self) -> None:
+        output = self._run_segment(verbose=False, show_text=True)
+
+        self.assertNotIn("Segment 4", output)
+        self.assertNotIn("Audio gate", output)
+
+    def test_default_still_shows_no_content(self) -> None:
+        output = self._run_segment(verbose=False, show_text=False)
+
+        self.assertNotIn("confidential source", output)
+        self.assertIn("Phrase", output)
+
+    def test_it_says_once_that_the_conversation_will_be_visible(self) -> None:
+        pipeline = LocalTranslatorPipeline(AppConfig())
+        pipeline._show_text = True
+        buffer = io.StringIO()
+
+        with redirect_stdout(buffer):
+            pipeline._announce_text_display()
+
+        self.assertIn("scrollback", buffer.getvalue())
+
+    def test_verbose_does_not_gain_the_announcement(self) -> None:
+        """--verbose output is parsed by the latency harness; leave it alone."""
+        pipeline = LocalTranslatorPipeline(AppConfig())
+        pipeline._show_text = True
+        pipeline._verbose = True
+        buffer = io.StringIO()
+
+        with redirect_stdout(buffer):
+            pipeline._announce_text_display()
+
+        self.assertEqual(buffer.getvalue(), "")
+
 
 
 if __name__ == "__main__":

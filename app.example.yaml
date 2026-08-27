@@ -64,3 +64,21 @@ chunking:
 realtime:
   recognition_queue_size: 2
   playback_queue_size: 1
+
+# Captured meeting content, for troubleshooting only. Off unless you turn it
+# on, here or with --diagnostics, because what it writes is the audio of each
+# phrase and a plain-text file holding its transcript and its translation.
+diagnostics:
+  enabled: false
+  # Setting a path here does not switch capture on; `enabled` above or
+  # --diagnostics does. Each session gets its own subdirectory under it, so
+  # two meetings cannot overwrite each other's phrases.
+  # Empty means %LOCALAPPDATA%\LiveTranslator\diagnostics, resolved at runtime
+  # so a redirected profile still works. A relative path is placed under that
+  # directory rather than the working directory, which keeps captured meetings
+  # out of a source checkout. An absolute path is used as given.
+  dir: null
+  # Retention. 0 disables that limit; the retention numbers are provisional
+  # pending a stakeholder decision, not a policy.
+  retention_days: 7
+  max_total_mb: 500
