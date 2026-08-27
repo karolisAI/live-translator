@@ -186,6 +186,28 @@ files into `models\tts`:
 - [German Thorsten medium](https://huggingface.co/rhasspy/piper-voices/tree/main/de/de_DE/thorsten/medium)
 - [English hfc_male medium](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/hfc_male/medium)
 
+### Optional: female voices
+
+Thorsten and hfc_male above are the only voices the installer bundles.
+Female voices are not prepackaged yet; download them the same way into
+`models\tts` if a meeting needs one:
+
+- [German Kerstin low](https://huggingface.co/rhasspy/piper-voices/tree/main/de/de_DE/kerstin/low)
+- [German Ramona low](https://huggingface.co/rhasspy/piper-voices/tree/main/de/de_DE/ramona/low)
+- [English hfc_female medium](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/hfc_female/medium)
+
+German female voices only go up to `low` quality in the standard Piper
+voice set; `hfc_female` matches the bundled `hfc_male` at `medium`.
+
+The `meeting` subcommand always uses the profile's configured
+`tts.model_path` and has no `--tts-model` flag. To use a female voice for a
+single run without editing the profile, use `loopback` instead, which
+supports the same audio routing and accepts `--tts-model` directly:
+
+```powershell
+& $LT loopback --config "$Profiles\en-de.yaml" --tts-model de_DE-kerstin-low.onnx
+```
+
 ## Speech Recognition
 
 Recognition runs NVIDIA Parakeet TDT 0.6B v3 through `onnx-asr` and
