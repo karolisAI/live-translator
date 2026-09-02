@@ -237,6 +237,78 @@ class CaptureActivationTests(unittest.TestCase):
         self.assertIn("translation", output)
 
 
+class CaptureWriteFailureTests(unittest.TestCase):
+    """A refused write costs the phrase its capture, never the meeting.
+
+    An OSError escaping these writers reaches the recognition worker, which
+    treats any escaping exception as a fatal stage failure and stops the
+    session. CaptureActivationTests already fixes the same rule for a capture
+    that cannot start; these fix it for one that is already running.
+    """
+
+    def setUp(self) -> None:
+        self._temp = TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.dir = Path(self._temp.name)
+        self.pipeline = LocalTranslatorPipeline(AppConfig())
+
+    def _quietly(self, call):
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            result = call()
+        return result, buffer.getvalue()
+
+    def _full_disk(self):
+        return patch(
+            "live_translator.pipeline.write_wav",
+            side_effect=OSError(28, "No space left on device"),
+        )
+
+    def test_a_refused_audio_write_does_not_end_the_meeting(self) -> None:
+        with self._full_disk():
+            result, output = self._quietly(
+                lambda: self.pipeline._write_debug_audio(self.dir, 1, object())
+            )
+
+        self.assertIsNone(result, "None is what makes the caller skip this phrase's note")
+        self.assertIn("No space left on device", output)
+
+    def test_a_refused_note_write_does_not_end_the_meeting(self) -> None:
+        with patch.object(Path, "write_text", side_effect=OSError(13, "Permission denied")):
+            _, output = self._quietly(
+                lambda: self.pipeline._write_debug_note(
+                    self.dir / segment_audio_name(1), "hallo", "hello"
+                )
+            )
+
+        self.assertIn("Permission denied", output)
+
+    def test_a_full_disk_warns_once_rather_than_every_phrase(self) -> None:
+        """Every phrase fails once the disk is full; a warning per phrase is its own problem."""
+        with self._full_disk():
+            _, output = self._quietly(
+                lambda: [
+                    self.pipeline._write_debug_audio(self.dir, n, object())
+                    for n in range(1, 6)
+                ]
+            )
+
+        self.assertEqual(output.count("No space left on device"), 1)
+
+    def test_capture_resumes_when_writing_works_again(self) -> None:
+        """The causes can be transient, so one failure must not switch capture off."""
+        with self._full_disk():
+            self._quietly(lambda: self.pipeline._write_debug_audio(self.dir, 1, object()))
+
+        with patch("live_translator.pipeline.write_wav") as write_wav:
+            result, _ = self._quietly(
+                lambda: self.pipeline._write_debug_audio(self.dir, 2, object())
+            )
+
+        self.assertTrue(write_wav.called, "capture must still be attempted after a failure")
+        self.assertEqual(result, self.dir / segment_audio_name(2))
+
+
 class CaptureWarningTests(unittest.TestCase):
     def test_warning_names_both_kinds_of_artifact(self) -> None:
         """The message this replaced said only "debug audio chunks", naming the
