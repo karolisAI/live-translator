@@ -3,7 +3,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from live_translator.asr.recognizer import DEFAULT_MODEL
-from live_translator.config import AppConfig, apply_cli_overrides, load_config
+from live_translator.config import (
+    AppConfig,
+    DiagnosticsSettings,
+    apply_cli_overrides,
+    load_config,
+)
 from live_translator.defaults import DEFAULT_ASR_ENGINE, DEFAULT_ASR_MODEL
 from live_translator.profiles import write_meeting_profile
 
@@ -307,6 +312,22 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.chunking.rolling_window_seconds, 2.6)
         self.assertEqual(config.chunking.silence_ms, 450)
         self.assertEqual(config.chunking.max_seconds, 5.0)
+
+    def test_cli_overrides_keep_sections_that_have_no_override(self) -> None:
+        """A section nobody overrode must survive the rebuild.
+
+        apply_cli_overrides builds a fresh AppConfig field by field, so a
+        section missing from that call is silently replaced by its defaults.
+        Comparing the whole config catches the next section added, not only
+        the one that was lost.
+        """
+        config = AppConfig(
+            diagnostics=DiagnosticsSettings(
+                enabled=True, dir="captures", retention_days=1, max_total_mb=50
+            )
+        )
+
+        self.assertEqual(apply_cli_overrides(config), config)
 
     def test_write_de_en_profile(self) -> None:
         with TemporaryDirectory() as temp_dir:
