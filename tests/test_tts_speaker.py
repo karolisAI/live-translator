@@ -317,6 +317,7 @@ class TtsSpeakerTests(unittest.TestCase):
         with (
             patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
             patch("live_translator.tts.speaker.subprocess.Popen", return_value=fake) as popen,
+            patch("live_translator.tts.speaker.read_wav_mono", return_value=READ_WAV_STUB),
             patch("live_translator.tts.speaker.play_mono") as play,
         ):
             speaker.warm_up()
