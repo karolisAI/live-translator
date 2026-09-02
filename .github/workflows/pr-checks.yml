@@ -1,0 +1,82 @@
+name: pr-checks
+
+# First automated PR-governance gate for the repo. On every pull request to
+# main it enforces two things, and blocks the merge until both pass:
+#   1. the title follows the repo's <type>/<subject> convention, and
+#   2. the description template has actually been filled in.
+#
+# It runs alongside (does not replace) any other workflow. Enforcement is made
+# real by adding the "pr-checks" status check to main's branch protection as a
+# required check -- see .github/workflows/README once configured, or the repo
+# settings under Branches.
+
+on:
+  pull_request:
+    branches: [main]
+    # "edited" is required so that fixing a bad title (or filling in the
+    # description) re-runs this check and can turn it green without an extra
+    # commit. The default set omits it.
+    types: [opened, edited, synchronize, reopened]
+
+# Least privilege: this workflow only reads PR metadata. No write scopes.
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-checks:
+    name: pr-checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title
+        # Public, GitHub-hosted-runner-only action, pinned to an immutable
+        # commit SHA (the commit behind release v1.0.2) rather than a mutable
+        # tag. Semantics confirmed against its source: `regex` is tested
+        # unanchored (hence the leading ^), and `allowed_prefixes` is a
+        # startsWith check. Both must pass, so lowercase types are required.
+        uses: deepakputhraya/action-pr-title@3864bebc79c5f829d25dd42d3c6579d040b0ef16 # v1.0.2
+        with:
+          regex: '^(feat|fix|docs|chore|refactor|perf|test|build|ci|revert)\/.+'
+          allowed_prefixes: 'feat/,fix/,docs/,chore/,refactor/,perf/,test/,build/,ci/,revert/'
+          prefix_case_sensitive: 'true'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate PR description
+        # Always run, even if the title step failed, so one red check reports
+        # every problem at once instead of one per push.
+        if: always()
+        # The PR body is passed through the environment, never interpolated
+        # into the script, so its contents can never be executed as shell.
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          # 1. Empty (or whitespace-only) body.
+          if [ -z "$(printf '%s' "${PR_BODY:-}" | tr -d '[:space:]')" ]; then
+            echo "::error::PR description is empty. Fill in the template: Summary, Changes, Testing."
+            exit 1
+          fi
+
+          printf '%s' "$PR_BODY" > pr_body.txt
+          fail=0
+
+          # 2. Untouched template placeholders left behind.
+          if grep -qF '_No response_' pr_body.txt; then
+            echo "::error::PR description still contains a '_No response_' placeholder. Replace every placeholder with real content."
+            fail=1
+          fi
+
+          # 3. Required template sections still present.
+          for section in Summary Changes Testing; do
+            if ! grep -qiE "^#{1,6}[[:space:]]+${section}([[:space:]]|$)" pr_body.txt; then
+              echo "::error::PR description is missing the required '## ${section}' section."
+              fail=1
+            fi
+          done
+
+          if [ "$fail" -ne 0 ]; then
+            echo "PR description check failed. See the annotations above."
+            exit 1
+          fi
+          echo "PR description is complete."
