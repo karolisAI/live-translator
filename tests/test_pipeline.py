@@ -32,6 +32,9 @@ class FakeSpeaker:
     def speak(self, text: str) -> None:
         self.spoken.append(text)
 
+    def close(self) -> None:
+        pass
+
 
 class PipelineTests(unittest.TestCase):
     def test_realtime_queue_sizes_come_from_config(self) -> None:
@@ -340,6 +343,64 @@ class PrintTranslationTests(unittest.TestCase):
             pipeline._print_translation("klarer Satz", "clear sentence", low_confidence=False)
 
         self.assertNotIn("[low confidence", buffer.getvalue())
+
+
+class SpeakerShutdownTests(unittest.TestCase):
+    """prepare() starts a resident Piper process, and a subprocess child is
+    not killed automatically when this process exits. Every exit path out of
+    a command that called prepare() therefore has to close the speaker, not
+    just the happy one."""
+
+    def _pipeline_with_fake_speaker(self):
+        pipeline = LocalTranslatorPipeline(AppConfig())
+        speaker = FakeSpeaker()
+        speaker.closed = 0
+        speaker.close = lambda: setattr(speaker, "closed", speaker.closed + 1)
+        return pipeline, speaker
+
+    def test_loopback_closes_the_speaker_when_it_fails_before_the_worker_loop(self) -> None:
+        """An unsupported chunker raises after prepare() has already warmed
+        Piper up. Verified against a real process count before this was
+        fixed: it left an orphaned piper.exe behind."""
+        pipeline, speaker = self._pipeline_with_fake_speaker()
+
+        with (
+            patch.object(pipeline, "_print_audio_route"),
+            patch.object(pipeline, "prepare"),
+            patch.object(pipeline, "_get_translator"),
+            patch.object(pipeline, "_get_speaker", return_value=speaker),
+        ):
+            with self.assertRaises(ValueError):
+                pipeline.loopback(chunker_mode="nonsense")
+
+        self.assertEqual(speaker.closed, 1)
+
+    def test_translate_once_closes_the_speaker_when_preparation_fails(self) -> None:
+        pipeline, speaker = self._pipeline_with_fake_speaker()
+
+        with (
+            patch.object(pipeline, "prepare", side_effect=RuntimeError("model exploded")),
+            patch.object(pipeline, "_get_speaker", return_value=speaker),
+        ):
+            with self.assertRaises(RuntimeError):
+                pipeline.translate_once()
+
+        self.assertEqual(speaker.closed, 1)
+
+    def test_translate_once_does_not_build_a_speaker_when_not_speaking(self) -> None:
+        """--no-speak must not start a Piper process just to close it."""
+        pipeline = LocalTranslatorPipeline(AppConfig())
+
+        with (
+            patch.object(pipeline, "prepare"),
+            patch.object(pipeline, "_get_translator"),
+            patch.object(pipeline, "_get_speaker") as get_speaker,
+            patch("live_translator.pipeline.record_mono", return_value=[0.0] * 16000),
+            patch.object(pipeline, "_transcribe_audio_if_safe", return_value=None),
+        ):
+            pipeline.translate_once(speak=False)
+
+        get_speaker.assert_not_called()
 
 
 class OfflineStartupOrderTests(unittest.TestCase):

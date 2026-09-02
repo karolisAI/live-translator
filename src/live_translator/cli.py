@@ -585,7 +585,14 @@ def cmd_say(args: argparse.Namespace) -> int:
     if args.config is None and args.tts_engine is None:
         args.tts_engine = "pyttsx3"
     config = build_config(args)
-    TtsSpeaker(config.tts, config.audio).speak(args.text)
+    speaker = TtsSpeaker(config.tts, config.audio)
+    try:
+        speaker.speak(args.text)
+    finally:
+        # A resident Piper process would otherwise outlive this one-shot
+        # command -- subprocess children are not killed automatically when
+        # this process exits.
+        speaker.close()
     return 0
 
 
