@@ -293,6 +293,7 @@ def apply_cli_overrides(
         tts=tts,
         chunking=chunking,
         realtime=config.realtime,
+        diagnostics=config.diagnostics,
     )
     validate_config(updated)
     return updated
