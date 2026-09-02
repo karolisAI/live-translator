@@ -1,6 +1,8 @@
+import json
 import os
 import unittest
 from pathlib import Path
+from queue import Queue
 from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import Mock, patch
@@ -28,15 +30,36 @@ class _BlockingIter:
 class _FakeProcess:
     """Stands in for what `subprocess.Popen` returns, so the resident-process
     mechanics (background reader threads, the response queue, is_alive) can
-    be tested without a real `piper.exe`."""
+    be tested without a real `piper.exe`.
 
-    def __init__(self, stdout_lines=(), stderr_lines=()):
+    `echo=True` answers each request with the `output_file` that request named,
+    which is what the real binary does: verified against the bundled
+    piper.exe, which prints the exact path, one line per request. Scripting
+    `stdout_lines` instead is how a wrong, missing or absent answer is
+    simulated.
+    """
+
+    def __init__(self, stdout_lines=(), stderr_lines=(), echo=False):
         self.stdin = Mock()
-        self.stdout = iter(stdout_lines) if stdout_lines is not None else _BlockingIter()
+        self._requests: Queue = Queue()
+        if echo:
+            self.stdin.write.side_effect = self._record_request
+            self.stdout = self._echo_requested_paths()
+        else:
+            self.stdout = iter(stdout_lines) if stdout_lines is not None else _BlockingIter()
         self.stderr = iter(stderr_lines)
         self._exited = False
         self.wait = Mock(return_value=0)
         self.kill = Mock(side_effect=self.mark_exited)
+
+    def _record_request(self, data):
+        text = data.strip()
+        if text:
+            self._requests.put(json.loads(text)["output_file"])
+
+    def _echo_requested_paths(self):
+        while True:
+            yield self._requests.get() + "\n"
 
     def poll(self):
         return None if not self._exited else 1
@@ -54,7 +77,7 @@ class TtsSpeakerTests(unittest.TestCase):
             TtsSettings(engine="piper", model_path="voice.onnx", length_scale=1.0),
             AudioSettings(),
         )
-        fake = _FakeProcess(stdout_lines=["out.wav\n"])
+        fake = _FakeProcess(echo=True)
 
         with (
             patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
@@ -75,7 +98,7 @@ class TtsSpeakerTests(unittest.TestCase):
             TtsSettings(engine="piper", model_path="voice.onnx"),
             AudioSettings(),
         )
-        fake = _FakeProcess(stdout_lines=["out.wav\n"])
+        fake = _FakeProcess(echo=True)
 
         with (
             patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
@@ -134,7 +157,7 @@ class TtsSpeakerTests(unittest.TestCase):
             TtsSettings(engine="piper", model_path="voice.onnx"),
             AudioSettings(),
         )
-        fake = _FakeProcess(stdout_lines=["out.wav\n"])
+        fake = _FakeProcess(echo=True)
 
         with (
             patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
@@ -176,6 +199,32 @@ class TtsSpeakerTests(unittest.TestCase):
         fake.kill.assert_called_once()
         self.assertFalse(piper.is_alive(), "a timed-out Piper must not be reused")
 
+    def test_an_answer_naming_another_file_is_refused(self) -> None:
+        """The other half of the same problem. Killing on timeout stops a late
+        answer reaching the next phrase, but nothing stopped an answer that
+        arrived on time and belonged to a different request: it was accepted
+        without ever being read, and render() went on to load a WAV that Piper
+        had not written. That fails quietly and stays wrong for every phrase
+        after it, because the ordering never recovers on its own. Real
+        piper.exe echoes back the output_file it just wrote, which is what
+        makes the mismatch detectable at all."""
+        speaker = TtsSpeaker(
+            TtsSettings(engine="piper", model_path="voice.onnx"),
+            AudioSettings(),
+        )
+        fake = _FakeProcess(stdout_lines=["some-other-phrase.wav" + chr(10)])
+
+        with (
+            patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
+            patch("live_translator.tts.speaker.subprocess.Popen", return_value=fake),
+        ):
+            piper = speaker._get_resident_piper()
+            with self.assertRaisesRegex(RuntimeError, "different request"):
+                piper.synthesize("phrase A", Path("a.wav"))
+
+        fake.kill.assert_called_once()
+        self.assertFalse(piper.is_alive(), "an out-of-order stream must not be reused")
+
     def test_piper_exiting_unexpectedly_is_reported_clearly(self) -> None:
         """stdout ending with no response (as opposed to hanging) means the
         process exited -- a crash, not a slow phrase -- and must be reported
@@ -200,7 +249,7 @@ class TtsSpeakerTests(unittest.TestCase):
             TtsSettings(engine="piper", model_path="voice.onnx"),
             AudioSettings(),
         )
-        fake = _FakeProcess(stdout_lines=["p1.wav\n", "p2.wav\n", "p3.wav\n"])
+        fake = _FakeProcess(echo=True)
 
         with (
             patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
@@ -222,8 +271,8 @@ class TtsSpeakerTests(unittest.TestCase):
             TtsSettings(engine="piper", model_path="voice.onnx"),
             AudioSettings(),
         )
-        first = _FakeProcess(stdout_lines=["p1.wav\n"])
-        second = _FakeProcess(stdout_lines=["p2.wav\n"])
+        first = _FakeProcess(echo=True)
+        second = _FakeProcess(echo=True)
 
         with (
             patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
@@ -242,7 +291,7 @@ class TtsSpeakerTests(unittest.TestCase):
             TtsSettings(engine="piper", model_path="voice.onnx"),
             AudioSettings(),
         )
-        fake = _FakeProcess(stdout_lines=["out.wav\n"])
+        fake = _FakeProcess(echo=True)
 
         with (
             patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
@@ -263,7 +312,7 @@ class TtsSpeakerTests(unittest.TestCase):
             TtsSettings(engine="piper", model_path="voice.onnx"),
             AudioSettings(),
         )
-        fake = _FakeProcess(stdout_lines=["warmup.wav\n"])
+        fake = _FakeProcess(echo=True)
 
         with (
             patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),

@@ -233,7 +233,17 @@ class LocalTranslatorPipeline:
         except KeyboardInterrupt:
             interrupted = True
         finally:
-            workers.stop()
+            # The recognition worker can sit inside synthesis for up to
+            # tts.piper_timeout_seconds. Joining for less than that returns
+            # while it is still running, and the close() in loopback's finally
+            # then tears the resident Piper process down underneath it: the
+            # worker's own call fails with a confusing "exited unexpectedly",
+            # and _get_resident_piper can start a replacement that nothing
+            # closes -- the orphaned piper.exe close() exists to prevent. The
+            # default 10s was shorter than the 30s Piper timeout, so this was
+            # reachable whenever Piper hung, which is the case the timeout is
+            # there for in the first place.
+            workers.stop(join_timeout=self._config.tts.piper_timeout_seconds + 5.0)
         workers.raise_if_failed()
         if interrupted:
             print("Meeting translation ended.")

@@ -121,6 +121,21 @@ class _PersistentPiper:
         if response is None:
             detail = "".join(self._stderr_tail).strip()
             raise RuntimeError("Piper process exited unexpectedly" + (f": {detail}" if detail else "."))
+        if response.strip() != str(wav_path):
+            # Piper echoes back the output_file it just wrote, one line per
+            # request -- verified against the bundled piper.exe, which prints
+            # the exact path. Anything else means this answer belongs to some
+            # other request, so the ordering everything here relies on has
+            # broken. Without this check render() would go on to read a WAV
+            # that Piper has not written yet and hand back whatever it found,
+            # silently, for the rest of the meeting. Kill rather than resync:
+            # a stream whose order is already wrong cannot be trusted to be
+            # right again, and a dead process is transparently replaced.
+            self._process.kill()
+            raise RuntimeError(
+                f"Piper answered for a different request ({response.strip()!r} "
+                f"instead of {str(wav_path)!r}) and was terminated."
+            )
 
     def close(self) -> None:
         try:
