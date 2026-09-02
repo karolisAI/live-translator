@@ -126,6 +126,43 @@ class TtsSpeakerTests(unittest.TestCase):
 
         self.assertEqual(run.call_args.kwargs["timeout"], 45.0)
 
+    def test_piper_input_is_written_as_utf8(self) -> None:
+        """Regression: subprocess.run(text=True, ...) with no explicit
+        encoding uses the platform's ANSI codepage (cp1252 on a Western
+        European Windows install) to encode `input` before writing it to
+        Piper's stdin. Any transcript containing a name, a foreign phrase,
+        or anything outside that codepage -- Cyrillic, Lithuanian
+        diacritics, plenty of ordinary meeting content -- raised
+        UnicodeEncodeError inside subprocess's internal writer thread. That
+        thread's exception never reaches this module's own error handling,
+        so the write just silently never completes: Piper sits waiting for
+        stdin that never arrives until the timeout kills it, reporting a
+        misleading 'did not finish within 30s' instead of the real cause."""
+        speaker = TtsSpeaker(
+            TtsSettings(engine="piper", model_path="voice.onnx"),
+            AudioSettings(),
+        )
+
+        with (
+            patch.object(
+                speaker,
+                "_resolve_piper_assets",
+                return_value=("piper.exe", Path("voice.onnx")),
+            ),
+            patch(
+                "live_translator.tts.speaker.subprocess.run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ) as run,
+            patch(
+                "live_translator.tts.speaker.read_wav_mono",
+                return_value=(np.zeros(160, dtype=np.float32), 16000),
+            ),
+            patch("live_translator.tts.speaker.play_mono"),
+        ):
+            speaker.speak("Věra čekol į kirčiavimą")
+
+        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+
     def test_a_hanging_piper_process_is_terminated_and_reported_clearly(self) -> None:
         """subprocess.run(timeout=...) already kills the child process itself
         when it fires -- this only needs to confirm that TimeoutExpired

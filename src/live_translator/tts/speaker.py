@@ -138,6 +138,7 @@ class TtsSpeaker:
                 command,
                 input=text,
                 text=True,
+                encoding="utf-8",
                 capture_output=True,
                 check=False,
                 timeout=self._tts_settings.piper_timeout_seconds,
