@@ -177,6 +177,50 @@ def resolve_trusted_path(path: str | Path) -> Path:
     return resolved
 
 
+def approved_runtime_root_for(path: str | Path) -> Path:
+    """Return the approved root containing an already resolved runtime path."""
+    resolved = Path(path).resolve()
+    containing = [root.resolve() for root in approved_runtime_roots() if _is_within(resolved, root)]
+    if not containing:
+        raise UntrustedRuntimePath(
+            f"'{resolved}' is outside every approved runtime location."
+        )
+    return max(containing, key=lambda root: len(root.parts))
+
+
+def runtime_manifest_path(runtime_root: str | Path) -> Path:
+    """Locate the immutable manifest beside source or bundled runtime assets."""
+    root = Path(runtime_root).resolve()
+    candidates = (
+        root / "runtime-assets.manifest.json",
+        root / "packaging" / "runtime-assets.manifest.json",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(
+        "Runtime asset manifest was not found. Searched: "
+        + ", ".join(str(candidate) for candidate in candidates)
+    )
+
+
+def find_runtime_manifest() -> Path:
+    """Find the application-owned manifest, independent of asset storage."""
+    searched: list[str] = []
+    for root in approved_runtime_roots():
+        candidates = (
+            root / "runtime-assets.manifest.json",
+            root / "packaging" / "runtime-assets.manifest.json",
+        )
+        for candidate in candidates:
+            searched.append(str(candidate))
+            if candidate.is_file():
+                return candidate
+    raise FileNotFoundError(
+        "Runtime asset manifest was not found. Searched: " + ", ".join(searched)
+    )
+
+
 def _is_within(path: Path, root: Path) -> bool:
     """Containment check that stays correct on Windows, where two paths
     naming the same location can differ in case (NTFS is case-insensitive)

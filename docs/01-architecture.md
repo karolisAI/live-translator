@@ -14,9 +14,12 @@ a conversation simultaneously.
 
 Meeting mode completes these steps before reporting `Ready`:
 
-1. Validate the prepared Parakeet model directory, then load from it.
-2. Open the configured Argos CTranslate2 model and SentencePiece tokenizer.
-3. Validate the Piper executable, voice model, and voice JSON.
+1. Verify the prepared Parakeet model against the approved SHA-256 manifest,
+   then load it.
+2. Verify and open the configured Argos CTranslate2 model and SentencePiece
+   tokenizer.
+3. Verify the complete Piper runtime and bundled voices, then select the
+   configured voice.
 4. Resolve the configured input and output devices when capture begins.
 
 Step 1 runs before step 4, so an unprepared machine fails while no audio device
@@ -161,10 +164,17 @@ per-user Argos data directory (`XDG_DATA_HOME`, or `~/.local/share`) ahead of
 and after the bundled default, respectively. Unlike the bundled-default path,
 these two remain deliberately unrestricted in *where* they may point -- an
 operator pointing at a custom or updated package location is a supported
-use, not a fallback for something missing.
+use, not a fallback for something missing. Location flexibility does not widen
+content trust: the selected directory must still match an approved `en_de` or
+`de_en` manifest root byte-for-byte.
 
-Named Parakeet models use the Hugging Face user cache. That cache is not
-inside this repository or the packaged application.
+The pinned Parakeet model is prepared under the repository when running from
+source and under `%LOCALAPPDATA%\LiveTranslator` in an installed build. The
+application verifies its four model files and mandatory `revision.txt`; only
+Hugging Face `.cache` download metadata is excluded from verification.
+
+The complete integrity design, provenance evidence, benchmarks and residual
+risks are documented in [06-runtime-asset-integrity.md](06-runtime-asset-integrity.md).
 
 ## Error Handling
 
@@ -184,3 +194,5 @@ ambient noise on the wrong input from producing a false pass.
 - No partial transcript stabilization or streaming TTS
 - No bundled speech model in the current Windows build
 - Unsigned internal Windows executable
+- Unsigned runtime manifest and installer; hashes do not authenticate their publisher
+- Startup verification is cached, leaving a same-user time-of-check/time-of-use window

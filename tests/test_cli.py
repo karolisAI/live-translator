@@ -203,6 +203,11 @@ class PrepareModelsCommandTests(unittest.TestCase):
     makes it the only place these assertions can live -- and makes the absence
     of a download everywhere else meaningful."""
 
+    def setUp(self) -> None:
+        integrity = patch("live_translator.asr.model_store.verify_manifest_root")
+        integrity.start()
+        self.addCleanup(integrity.stop)
+
     def write_profile(self, root: Path, model_dir: Path) -> Path:
         path = root / "en-de.yaml"
         path.write_text(

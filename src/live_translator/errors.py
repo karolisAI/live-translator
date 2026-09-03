@@ -26,6 +26,19 @@ class UntrustedRuntimePath(RuntimeError):
     """
 
 
+class AssetIntegrityError(RuntimeError):
+    """A protected runtime asset does not match its approved identity.
+
+    Kept distinct from path-trust and dependency errors so callers can fail
+    closed while still giving an actionable, content-free explanation: the
+    expected asset is missing, has the wrong size, or has the wrong SHA-256.
+    """
+
+
+class ManifestValidationError(ValueError):
+    """The runtime asset manifest is malformed or internally inconsistent."""
+
+
 def require_package(module_name: str, install_name: str | None = None) -> None:
     if importlib.util.find_spec(module_name) is None:
         package = install_name or module_name

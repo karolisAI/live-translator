@@ -161,8 +161,12 @@ class VerifyLocalModelTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             directory = prepare_dir(Path(tmp) / "parakeet")
 
-            with network_blocked():
+            with network_blocked(), patch(
+                "live_translator.asr.model_store.verify_manifest_root"
+            ) as verify_integrity:
                 self.assertEqual(verify_local_model(settings_for(directory)), directory)
+
+        verify_integrity.assert_called_once()
 
     def test_missing_directory_fails_without_reaching_the_network(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -209,14 +213,14 @@ class VerifyLocalModelTests(unittest.TestCase):
 
         self.assertIn(ASR_MODEL_REVISION, str(caught.exception))
 
-    def test_unstamped_directory_is_tolerated(self) -> None:
-        """A model staged by hand or by IT has no revision file. Refusing it
-        would block the one workflow that never touches the network at all."""
+    def test_unstamped_directory_is_rejected(self) -> None:
+        """A directory without provenance cannot be treated as approved."""
         with TemporaryDirectory() as tmp:
             directory = prepare_dir(Path(tmp) / "parakeet", revision=None)
 
             self.assertIsNone(recorded_revision(directory))
-            self.assertEqual(verify_local_model(settings_for(directory)), directory)
+            with self.assertRaisesRegex(ModelNotPrepared, REVISION_FILE):
+                verify_local_model(settings_for(directory))
 
     def test_unpinned_model_without_a_directory_is_refused(self) -> None:
         with self.assertRaisesRegex(ValueError, "no prepared local assets"):
@@ -235,7 +239,9 @@ class DownloadModelTests(unittest.TestCase):
                 prepare_dir(Path(kwargs["local_dir"]), revision=None)
                 return kwargs["local_dir"]
 
-            with patch("huggingface_hub.snapshot_download", side_effect=fake_download) as spy:
+            with patch("huggingface_hub.snapshot_download", side_effect=fake_download) as spy, patch(
+                "live_translator.asr.model_store.verify_manifest_root"
+            ):
                 download_model(settings, announce=False)
 
             repo_id, kwargs = spy.call_args.args[0], spy.call_args.kwargs
@@ -253,7 +259,9 @@ class DownloadModelTests(unittest.TestCase):
                 prepare_dir(Path(kwargs["local_dir"]), revision=None)
                 return kwargs["local_dir"]
 
-            with patch("huggingface_hub.snapshot_download", side_effect=fake_download) as spy:
+            with patch("huggingface_hub.snapshot_download", side_effect=fake_download) as spy, patch(
+                "live_translator.asr.model_store.verify_manifest_root"
+            ):
                 download_model(settings_for(directory, compute_type="int8"), announce=False)
 
             patterns = spy.call_args.kwargs["allow_patterns"]

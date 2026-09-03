@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from live_translator.asset_manifest import load_manifest, verify_manifest_root
 from live_translator.asr.recognizer import normalize_quantization
 from live_translator.defaults import (
     ASR_MODEL_DIR,
@@ -34,7 +35,7 @@ from live_translator.defaults import (
     DEFAULT_ASR_MODEL,
 )
 from live_translator.errors import MissingDependency, ModelNotPrepared
-from live_translator.runtime import approved_runtime_roots, user_data_dir
+from live_translator.runtime import approved_runtime_roots, find_runtime_manifest, user_data_dir
 
 __all__ = [
     "REVISION_FILE",
@@ -175,12 +176,20 @@ def verify_local_model(settings: Any) -> Path:
         )
 
     found = recorded_revision(directory)
-    if found is not None and found != ASR_MODEL_REVISION:
+    if found is None:
+        raise ModelNotPrepared(
+            f"The prepared Parakeet model in '{directory}' has no {REVISION_FILE}, "
+            f"so its approved revision cannot be established. Re-prepare it with: "
+            f"{_PREPARE_COMMAND}"
+        )
+    if found != ASR_MODEL_REVISION:
         raise ModelNotPrepared(
             f"The prepared Parakeet model in '{directory}' is revision {found}, "
             f"but this build expects {ASR_MODEL_REVISION}. Re-prepare it with: "
             f"{_PREPARE_COMMAND}"
         )
+    manifest = load_manifest(find_runtime_manifest())
+    verify_manifest_root(manifest, ASR_MODEL_DIR, directory)
     return directory
 
 

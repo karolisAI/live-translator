@@ -29,6 +29,7 @@ for source, target in [
     ("models/argos", "models/argos"),
     ("models/tts", "models/tts"),
     ("tools/piper", "tools/piper"),
+    ("packaging/runtime-assets.manifest.json", "."),
     ("README.md", "."),
     ("docs", "docs"),
     ("app.example.yaml", "."),

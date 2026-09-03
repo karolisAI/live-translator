@@ -15,8 +15,8 @@ No API key is required after the local models are prepared.
   synthesized, and played.
 - Recognition/translation and playback run on separate ordered workers.
 - Voice activity detection commits a phrase after a short pause.
-- ASR and translation models load, and Piper assets are validated, before the
-  application reports `Ready`.
+- Parakeet, Argos and Piper assets are verified against the approved SHA-256
+  manifest before the application reports `Ready`.
 - Low-energy noise and low-confidence recognizer output are not spoken.
 - Bounded phrase queues prevent unlimited latency and report any overload.
 - Transient Windows output-start failures are retried on the verified WASAPI
@@ -179,6 +179,10 @@ live-translator argos-install --source-language en --target-language de
 live-translator argos-install --source-language de --target-language en
 ```
 
+`argos-install` selects the manifest-approved package version `1.3`; it refuses
+a newer index version until its provenance, hashes and regression tests have
+been reviewed and the manifest has been deliberately updated.
+
 Download and extract the complete `piper_windows_amd64.zip` release into
 `tools\piper`. Download both `.onnx` voice files and their matching `.onnx.json`
 files into `models\tts`:
@@ -186,11 +190,13 @@ files into `models\tts`:
 - [German Thorsten medium](https://huggingface.co/rhasspy/piper-voices/tree/main/de/de_DE/thorsten/medium)
 - [English hfc_male medium](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/hfc_male/medium)
 
-### Optional: female voices
+### Additional voices
 
-Thorsten and hfc_male above are the only voices the installer bundles.
-Female voices are not prepackaged yet; download them the same way into
-`models\tts` if a meeting needs one:
+Thorsten and hfc_male above are the only approved voices the installer bundles.
+Do not copy another voice directly into `models\tts`: protected roots reject
+unlisted files. Adding a voice is a release change that requires provenance
+review, manifest size and SHA-256 entries, tests and a rebuilt application.
+Possible upstream candidates include:
 
 - [German Kerstin low](https://huggingface.co/rhasspy/piper-voices/tree/main/de/de_DE/kerstin/low)
 - [German Ramona low](https://huggingface.co/rhasspy/piper-voices/tree/main/de/de_DE/ramona/low)
@@ -259,9 +265,10 @@ needs `encoder-model.int8.onnx`, `decoder_joint-model.int8.onnx`, `vocab.txt`
 and `config.json`; switching to float32 means preparing again, because those are
 different files.
 
-Set `asr.model_dir` to read the model from somewhere else -- a shared read-only
-location, or one staged by IT rather than by this command. A directory staged
-that way needs no `revision.txt`.
+Set `asr.model_dir` to place the approved model in a shared read-only location
+or one staged by IT. Relocation is supported, but different contents are not:
+the directory must contain the pinned int8 files and matching `revision.txt`
+covered by the bundled manifest.
 
 ### Offline Guarantees
 
@@ -439,6 +446,13 @@ repository root:
 Get-FileHash .\dist\installer\LiveTranslatorSetup.exe -Algorithm SHA256
 ```
 
+Validate without producing a new EXE or installer:
+
+```powershell
+.\scripts\build_windows.ps1 -ValidateOnly
+.\scripts\build_inno_installer.ps1 -ValidateOnly
+```
+
 The distributable file is `dist\installer\LiveTranslatorSetup.exe`. It contains
 the complete PyInstaller application folder; recipients do not also need the
 `dist\LiveTranslator` directory. Update `MyAppVersion` in
@@ -452,9 +466,11 @@ profiles, rather than in the read-only installation directory.
 ## Verification
 
 ```powershell
-python -m unittest discover -s tests -t tests -v
-python -m compileall -q src tests
+python -m unittest discover -s tests
+python -m compileall -q src tests scripts
 python -m pip check
+python .\scripts\benchmark_asset_integrity.py --repetitions 5
+python .\scripts\benchmark_meeting_integrity.py
 ```
 
 The automated suite covers configuration, audio analysis, resampling,
@@ -470,6 +486,7 @@ Additional references:
 - `docs/03-windows-audio-routing.md`: Windows endpoint routing
 - `docs/04-meeting-test.md`: meeting validation checklist
 - `docs/05-windows-packaging.md`: executable build and installation
+- `docs/06-runtime-asset-integrity.md`: manifest enforcement, evidence and residual risk
 
 Benchmark write-ups and their audio live in `research/`, which is not tracked in
 Git.

@@ -5,10 +5,11 @@ import os
 from pathlib import Path
 from typing import Any
 
+from live_translator.asset_manifest import load_manifest, verify_manifest_root
 from live_translator.config import TranslationSettings
 from live_translator.errors import MissingDependency
 from live_translator.mt.argos_runtime import configure_argos_runtime, validate_override_dir
-from live_translator.runtime import resolve_trusted_path
+from live_translator.runtime import find_runtime_manifest, resolve_trusted_path
 
 _last_validated_xdg_data_home: str | None = None
 """Cache for _argos_package_path()'s XDG_DATA_HOME check, same reasoning as
@@ -24,6 +25,7 @@ class TranslationEngine:
         self._translator: Any | None = None
         self._tokenizer: Any | None = None
         self._target_prefix = ""
+        self._verified_argos_package: Path | None = None
 
     def translate(self, text: str) -> str:
         if not text:
@@ -74,6 +76,15 @@ class TranslationEngine:
             ) from exc
 
         package_path = _argos_package_path(self._settings.source_language, self._settings.target_language)
+        if self._verified_argos_package != package_path.resolve():
+            package_name = f"{self._settings.source_language}_{self._settings.target_language}"
+            manifest = load_manifest(find_runtime_manifest())
+            verify_manifest_root(
+                manifest,
+                f"models/argos/packages/{package_name}",
+                package_path,
+            )
+            self._verified_argos_package = package_path.resolve()
         model_path = package_path / "model"
         sentencepiece_path = package_path / "sentencepiece.model"
         if not model_path.exists():
