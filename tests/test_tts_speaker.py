@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from queue import Queue
 from tempfile import TemporaryDirectory
-from threading import Event
+from threading import Event, Thread
 from unittest.mock import Mock, call, patch
 
 import numpy as np
@@ -199,6 +199,106 @@ class TtsSpeakerTests(unittest.TestCase):
 
         fake.kill.assert_called_once()
         self.assertFalse(piper.is_alive(), "a timed-out Piper must not be reused")
+
+    def test_closed_stdin_is_reported_as_a_clear_piper_error(self) -> None:
+        """TextIO uses ValueError for a closed stream, not OSError. Preserve
+        the same application-facing error if a pipe closes independently of
+        TtsSpeaker's serialized lifecycle."""
+        speaker = TtsSpeaker(
+            TtsSettings(engine="piper", model_path="voice.onnx"),
+            AudioSettings(),
+        )
+        fake = _FakeProcess(echo=True)
+
+        with (
+            patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
+            patch("live_translator.tts.speaker.subprocess.Popen", return_value=fake),
+        ):
+            piper = speaker._get_resident_piper()
+            fake.stdin.write.side_effect = ValueError("I/O operation on closed file.")
+
+            with self.assertRaisesRegex(RuntimeError, "no longer running"):
+                piper.synthesize("phrase", Path("a.wav"))
+
+    def test_close_waits_for_an_in_flight_request_before_closing_the_pipe(self) -> None:
+        """TtsSpeaker owns the lifecycle. close() cannot shut stdin underneath
+        a request that has already started, and the request cannot be split
+        from the response it owns."""
+        speaker = TtsSpeaker(
+            TtsSettings(engine="piper", model_path="voice.onnx"),
+            AudioSettings(),
+        )
+        fake = _FakeProcess(echo=True)
+        write_started = Event()
+        allow_write = Event()
+        close_started = Event()
+        close_finished = Event()
+        failures = []
+
+        def delayed_write(data) -> None:
+            write_started.set()
+            allow_write.wait()
+            fake._record_request(data)
+
+        fake.stdin.write.side_effect = delayed_write
+
+        with (
+            patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
+            patch("live_translator.tts.speaker.subprocess.Popen", return_value=fake),
+        ):
+            def synthesize() -> None:
+                try:
+                    speaker._synthesize_piper("phrase", Path("a.wav"))
+                except BaseException as exc:
+                    failures.append(exc)
+
+            def close() -> None:
+                close_started.set()
+                speaker.close()
+                close_finished.set()
+
+            synth_thread = Thread(target=synthesize)
+            close_thread = Thread(target=close)
+            synth_thread.start()
+            self.assertTrue(write_started.wait(timeout=1), "synthesis never reached the pipe")
+            close_thread.start()
+            self.assertTrue(close_started.wait(timeout=1), "close thread never started")
+            self.assertFalse(close_finished.wait(timeout=0.05), "close raced past the active request")
+            fake.stdin.close.assert_not_called()
+
+            allow_write.set()
+            synth_thread.join(timeout=1)
+            close_thread.join(timeout=1)
+
+        self.assertFalse(synth_thread.is_alive())
+        self.assertFalse(close_thread.is_alive())
+        self.assertEqual(failures, [])
+        fake.stdin.close.assert_called_once()
+
+    def test_close_is_permanent_and_cannot_spawn_an_orphan_replacement(self) -> None:
+        """A late worker must not create a fresh Piper after session teardown.
+        This is the lifecycle gap a lock on the old process cannot close."""
+        speaker = TtsSpeaker(
+            TtsSettings(engine="piper", model_path="voice.onnx"),
+            AudioSettings(),
+        )
+        fake = _FakeProcess(echo=True)
+
+        with (
+            patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
+            patch("live_translator.tts.speaker.subprocess.Popen", return_value=fake) as popen,
+            patch("live_translator.tts.speaker.read_wav_mono", return_value=READ_WAV_STUB),
+        ):
+            speaker.warm_up()
+            speaker.close()
+            speaker.close()
+            popen.reset_mock()
+
+            with self.assertRaisesRegex(RuntimeError, "closed"):
+                speaker._synthesize_piper("late phrase", Path("late.wav"))
+
+        popen.assert_not_called()
+        fake.stdin.close.assert_called_once()
 
     def test_an_answer_naming_another_file_is_refused(self) -> None:
         """The other half of the same problem. Killing on timeout stops a late

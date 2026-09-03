@@ -7,7 +7,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Thread
+from threading import Lock, Thread
 from typing import Any
 
 from live_translator.audio.io import play_mono, read_wav_mono
@@ -101,7 +101,11 @@ class _PersistentPiper:
         try:
             self._process.stdin.write(request + "\n")
             self._process.stdin.flush()
-        except (BrokenPipeError, OSError) as exc:
+        except (BrokenPipeError, OSError, ValueError) as exc:
+            # TextIO raises ValueError, rather than OSError, if the stream was
+            # already closed. TtsSpeaker serializes synthesis against close(),
+            # but keep this boundary defensive for direct/internal callers and
+            # for a pipe that fails independently of normal shutdown.
             raise RuntimeError(f"Piper process is no longer running: {exc}") from exc
 
         try:
@@ -197,6 +201,13 @@ class TtsSpeaker:
         self._tts_settings = tts_settings
         self._audio_settings = audio_settings
         self._resident_piper: _PersistentPiper | None = None
+        # This object owns the resident process. Serialize the complete Piper
+        # request against close(), not merely the stdin write: request/response
+        # matching is positional, and a partial lock would still allow two
+        # callers to consume each other's responses. Once closed, a session's
+        # speaker is never reopened.
+        self._piper_lifecycle_lock = Lock()
+        self._piper_closed = False
 
     def speak(self, text: str) -> None:
         if not text:
@@ -279,7 +290,7 @@ class TtsSpeaker:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp:
             wav_path = Path(temp.name)
         try:
-            self._get_resident_piper().synthesize("Warming up.", wav_path)
+            self._synthesize_piper("Warming up.", wav_path)
             # Also pay read_wav_mono's own first-call cost here rather than on
             # the first real phrase. Measured 2026-08-26: with the process
             # already resident, synthesize() itself is fast (~0.12s) on the
@@ -294,6 +305,8 @@ class TtsSpeaker:
             wav_path.unlink(missing_ok=True)
 
     def _get_resident_piper(self) -> _PersistentPiper:
+        if self._piper_closed:
+            raise RuntimeError("Piper speaker is closed and cannot be restarted.")
         if self._resident_piper is not None and self._resident_piper.is_alive():
             return self._resident_piper
         if self._resident_piper is not None:
@@ -314,8 +327,9 @@ class TtsSpeaker:
         know the process is resident at all. Also restarts it transparently
         if a previous request left it dead.
         """
-        piper = self._get_resident_piper()
-        piper.synthesize(text, wav_path)
+        with self._piper_lifecycle_lock:
+            piper = self._get_resident_piper()
+            piper.synthesize(text, wav_path)
 
     def close(self) -> None:
         """Stop the resident Piper process, if one was ever started.
@@ -324,9 +338,13 @@ class TtsSpeaker:
         process exits on Windows -- skipping this leaks a `piper.exe` past
         the end of every session that used one.
         """
-        if self._resident_piper is not None:
-            self._resident_piper.close()
-            self._resident_piper = None
+        with self._piper_lifecycle_lock:
+            if self._piper_closed:
+                return
+            self._piper_closed = True
+            if self._resident_piper is not None:
+                self._resident_piper.close()
+                self._resident_piper = None
 
     def render(self, text: str) -> RenderedSpeech | None:
         """Turn text into audio without playing it.
