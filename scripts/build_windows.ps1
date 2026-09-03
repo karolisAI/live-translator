@@ -1,5 +1,6 @@
 param(
-    [switch]$InstallBuildTools
+    [switch]$InstallBuildTools,
+    [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,6 +12,18 @@ if (-not (Test-Path $Python)) {
     throw "Missing venv Python at $Python. Create the venv and install dependencies first."
 }
 
+& $Python -m live_translator.validate_assets `
+    --root $Root `
+    --manifest (Join-Path $Root "packaging\runtime-assets.manifest.json")
+if ($LASTEXITCODE -ne 0) {
+    throw "Runtime asset integrity validation failed. Build stopped before PyInstaller."
+}
+
+if ($ValidateOnly) {
+    Write-Host "Asset validation complete; PyInstaller was not run."
+    return
+}
+
 if ($InstallBuildTools) {
     & $Python -m pip install -e ".[build]"
 }
@@ -20,44 +33,32 @@ if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller is not installed. Re-run with: .\scripts\build_windows.ps1 -InstallBuildTools"
 }
 
-foreach ($asset in @(
-    "tools\piper\piper.exe",
-    "tools\piper\piper_phonemize.dll",
-    "tools\piper\onnxruntime.dll",
-    "tools\piper\espeak-ng-data"
-)) {
-    if (-not (Test-Path $asset)) {
-        throw "Missing Piper runtime asset: $asset"
-    }
-}
-
-foreach ($voice in @(
-    "models\tts\de_DE-thorsten-medium.onnx",
-    "models\tts\de_DE-thorsten-medium.onnx.json",
-    "models\tts\en_US-hfc_male-medium.onnx",
-    "models\tts\en_US-hfc_male-medium.onnx.json"
-)) {
-    if (-not (Test-Path $voice)) {
-        throw "Missing $voice"
-    }
-}
-
-foreach ($asset in @(
-    "models\argos\packages\en_de\model\model.bin",
-    "models\argos\packages\en_de\sentencepiece.model",
-    "models\argos\packages\de_en\model\model.bin",
-    "models\argos\packages\de_en\sentencepiece.model"
-)) {
-    if (-not (Test-Path $asset)) {
-        throw "Missing bundled Argos asset: $asset"
-    }
-}
-
 & $Python -m PyInstaller --clean --noconfirm "packaging\windows\LiveTranslator.spec"
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller build failed."
 }
 
+$DistRoot = Join-Path $Root "dist\LiveTranslator"
+$DistInternal = Join-Path $DistRoot "_internal"
+$DistExe = Join-Path $DistRoot "LiveTranslator.exe"
+$DistManifest = Join-Path $DistInternal "runtime-assets.manifest.json"
+
+if (-not (Test-Path -LiteralPath $DistExe -PathType Leaf)) {
+    throw "Packaged executable is missing: $DistExe"
+}
+
+& $Python -m live_translator.validate_assets `
+    --root $DistInternal `
+    --manifest $DistManifest
+if ($LASTEXITCODE -ne 0) {
+    throw "Packaged dist asset validation failed. The build must not be distributed."
+}
+
+& $DistExe --help *> $null
+if ($LASTEXITCODE -ne 0) {
+    throw "Packaged executable smoke test failed with exit code $LASTEXITCODE."
+}
+
 Write-Host ""
-Write-Host "Built: $Root\dist\LiveTranslator\LiveTranslator.exe"
-Write-Host "Try:   $Root\dist\LiveTranslator\LiveTranslator.exe setup"
+Write-Host "Built and verified: $DistExe"
+Write-Host "Try:                $DistExe setup"

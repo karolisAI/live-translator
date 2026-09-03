@@ -2,7 +2,8 @@
 
 ## Required Local Assets
 
-The build script requires these paths before PyInstaller starts:
+The build script verifies these protected roots against
+`packaging/runtime-assets.manifest.json` before PyInstaller starts:
 
 ```text
 models/argos/packages/en_de/
@@ -15,7 +16,8 @@ tools/piper/piper.exe
 ```
 
 The complete Piper directory is bundled, not only `piper.exe`, because the
-runtime DLLs and `espeak-ng-data` are required beside it.
+runtime DLLs and `espeak-ng-data` are required beside it. Existence alone is not
+accepted: size, SHA-256 and the absence of unlisted files are checked.
 
 ## Build
 
@@ -28,6 +30,12 @@ From the repository root:
 Later builds can omit `-InstallBuildTools` once PyInstaller is installed in the
 project virtual environment.
 
+Run only the source-asset preflight with:
+
+```powershell
+.\scripts\build_windows.ps1 -ValidateOnly
+```
+
 Output:
 
 ```text
@@ -35,7 +43,9 @@ dist/LiveTranslator/LiveTranslator.exe
 ```
 
 The PyInstaller folder contains the Python runtime, CTranslate2 libraries,
-Argos models, Piper, and both voices.
+Argos models, Piper, both voices and the approved runtime manifest. The build
+script verifies the copied assets under `dist/LiveTranslator/_internal` and
+runs a packaged `--help` smoke test before reporting success.
 
 ## Speech Model Preparation
 
@@ -48,10 +58,11 @@ it once while online:
 
 An installed build writes it to
 `%LOCALAPPDATA%\LiveTranslator\models\asr\parakeet-tdt-0.6b-v3`, beside the
-profiles rather than inside the installation directory, which is not writable
-for a per-user install and is replaced on upgrade. Because it sits outside the
-application, the model survives an upgrade or uninstall and is prepared once per
-Windows user rather than once per version.
+profiles rather than inside the application directory, which is replaced on
+upgrade. Because it sits outside the application, the model survives an upgrade
+or uninstall and is prepared once per Windows user rather than once per version.
+Both locations are writable by that Windows user; manifest verification detects
+model changes but is not a substitute for managed filesystem permissions.
 
 Both generated profiles use the same model, so this is run once, not once per
 profile. Repeat it only for a profile that names a different `asr.model` or
@@ -101,6 +112,9 @@ the executable in a meeting.
 ```powershell
 .\scripts\build_inno_installer.ps1
 ```
+
+The script revalidates `dist` immediately before invoking Inno Setup. Use
+`-ValidateOnly` to perform that gate without creating an installer.
 
 The current binary and installer are unsigned and intended for controlled
 internal demonstration. Windows SmartScreen behavior depends on local policy.

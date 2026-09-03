@@ -20,7 +20,7 @@ from live_translator.config import (
     validate_config,
 )
 from live_translator.defaults import ASR_ENGINES, DEFAULT_ASR_ENGINE
-from live_translator.errors import ModelNotPrepared, UnsupportedModel
+from live_translator.errors import AssetIntegrityError, ModelNotPrepared, UnsupportedModel
 from test_model_store import network_blocked, prepare_dir
 
 
@@ -60,6 +60,11 @@ def build_adapter(transcript: FakeTranscript) -> ParakeetAsr:
 class ParakeetAdapterTests(unittest.TestCase):
     """The recognizer's own behaviour is covered in test_recognizer.py.
     What matters here is the mapping onto this project's TranscriptResult."""
+
+    def setUp(self) -> None:
+        integrity = patch("live_translator.asr.model_store.verify_manifest_root")
+        self.verify_integrity = integrity.start()
+        self.addCleanup(integrity.stop)
 
     def test_maps_accepted_transcript(self) -> None:
         engine = build_adapter(
@@ -134,6 +139,17 @@ class ParakeetAdapterTests(unittest.TestCase):
                 compression_ratio_threshold=2.4,
             )
 
+    def test_failed_integrity_blocks_recognizer_loading(self) -> None:
+        with TemporaryDirectory() as tmp:
+            directory = prepare_dir(Path(tmp) / "parakeet")
+            self.verify_integrity.side_effect = AssetIntegrityError("modified encoder")
+
+            with patch("live_translator.asr.parakeet_engine.ParakeetRecognizer") as recognizer:
+                with self.assertRaisesRegex(AssetIntegrityError, "modified encoder"):
+                    ParakeetAsr(AsrSettings(engine="parakeet", model_dir=str(directory)))
+
+            recognizer.assert_not_called()
+
     def test_translates_unsupported_model_into_a_config_facing_error(self) -> None:
         """A prepared directory is staged first, so this exercises the model
         complaint from the recognizer rather than the earlier refusal to look
@@ -157,6 +173,11 @@ class OfflineStartupTests(unittest.TestCase):
     to prove here is that this application actually hands it one, for either
     meeting direction, and that no preparation code runs on the way.
     """
+
+    def setUp(self) -> None:
+        integrity = patch("live_translator.asr.model_store.verify_manifest_root")
+        integrity.start()
+        self.addCleanup(integrity.stop)
 
     def build_engine(self, directory: Path, language: str):
         settings = AsrSettings(
@@ -253,6 +274,11 @@ class AsrRegistryTests(unittest.TestCase):
     """`defaults.ASR_ENGINES` is the one place an engine is declared. These pin
     the three consumers -- the factory, config validation and the CLI choices --
     to it, so a new entry cannot reach some of them and not the others."""
+
+    def setUp(self) -> None:
+        integrity = patch("live_translator.asr.model_store.verify_manifest_root")
+        integrity.start()
+        self.addCleanup(integrity.stop)
 
     def test_supported_engines_are_exactly_the_registry_keys(self) -> None:
         self.assertEqual(SUPPORTED_ASR_ENGINES, tuple(ASR_ENGINES))

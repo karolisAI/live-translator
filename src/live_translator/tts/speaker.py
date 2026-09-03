@@ -11,9 +11,14 @@ from threading import Lock, Thread
 from typing import Any
 
 from live_translator.audio.io import play_mono, read_wav_mono
+from live_translator.asset_manifest import load_manifest, verify_manifest
 from live_translator.config import AudioSettings, TtsSettings
 from live_translator.errors import MissingDependency
-from live_translator.runtime import resolve_trusted_path
+from live_translator.runtime import (
+    approved_runtime_root_for,
+    find_runtime_manifest,
+    resolve_trusted_path,
+)
 
 
 class _PersistentPiper:
@@ -208,6 +213,7 @@ class TtsSpeaker:
         # speaker is never reopened.
         self._piper_lifecycle_lock = Lock()
         self._piper_closed = False
+        self._verified_piper_assets: tuple[str, Path] | None = None
 
     def speak(self, text: str) -> None:
         if not text:
@@ -401,6 +407,8 @@ class TtsSpeaker:
         self.play(self.render(text))
 
     def _resolve_piper_assets(self) -> tuple[str, Path]:
+        if self._verified_piper_assets is not None:
+            return self._verified_piper_assets
         if not self._tts_settings.model_path:
             raise ValueError("tts.model_path is required when tts.engine is 'piper'.")
         piper_exe = resolve_piper_exe(self._tts_settings.piper_exe)
@@ -419,7 +427,29 @@ class TtsSpeaker:
         for companion in ("piper_phonemize.dll", "onnxruntime.dll", "espeak-ng-data"):
             if not (runtime_dir / companion).exists():
                 raise FileNotFoundError(f"Piper runtime asset not found: {runtime_dir / companion}")
-        return piper_exe, model_path
+
+        runtime_root = approved_runtime_root_for(piper_exe)
+        if approved_runtime_root_for(model_path) != runtime_root:
+            raise ValueError("Piper executable and voice model must use the same approved runtime root.")
+        manifest = load_manifest(find_runtime_manifest(runtime_root))
+        verified = verify_manifest(
+            manifest,
+            runtime_root,
+            components={"piper-runtime", "piper-voice"},
+        )
+        exe_key = Path(piper_exe).resolve().relative_to(runtime_root).as_posix()
+        model_key = model_path.resolve().relative_to(runtime_root).as_posix()
+        config_key = config_path.resolve().relative_to(runtime_root).as_posix()
+        verified_by_key = {key.casefold(): path for key, path in verified.items()}
+        for key in (exe_key, model_key, config_key):
+            if key.casefold() not in verified_by_key:
+                raise ValueError(f"Piper asset is not approved by the runtime manifest: '{key}'.")
+
+        self._verified_piper_assets = (
+            str(verified_by_key[exe_key.casefold()]),
+            verified_by_key[model_key.casefold()],
+        )
+        return self._verified_piper_assets
 
 
 def resolve_piper_exe(piper_exe: str) -> str | None:

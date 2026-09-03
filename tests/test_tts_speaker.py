@@ -11,7 +11,7 @@ from unittest.mock import Mock, call, patch
 import numpy as np
 
 from live_translator.config import AudioSettings, TtsSettings
-from live_translator.errors import UntrustedRuntimePath
+from live_translator.errors import AssetIntegrityError, UntrustedRuntimePath
 from live_translator.tts.speaker import TtsSpeaker, resolve_piper_exe
 
 
@@ -73,6 +73,79 @@ READ_WAV_STUB = (np.zeros(160, dtype=np.float32), 16000)
 
 
 class TtsSpeakerTests(unittest.TestCase):
+    def _piper_assets(self, root: Path) -> tuple[Path, Path]:
+        runtime = root / "tools" / "piper"
+        runtime.mkdir(parents=True)
+        exe = runtime / "piper.exe"
+        exe.write_bytes(b"exe")
+        (runtime / "piper_phonemize.dll").write_bytes(b"dll")
+        (runtime / "onnxruntime.dll").write_bytes(b"dll")
+        (runtime / "espeak-ng-data").mkdir()
+        model = root / "models" / "tts" / "voice.onnx"
+        model.parent.mkdir(parents=True)
+        model.write_bytes(b"model")
+        model.with_suffix(".onnx.json").write_bytes(b"config")
+        return exe, model
+
+    def test_failed_integrity_blocks_piper_subprocess(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            exe, model = self._piper_assets(root)
+            speaker = TtsSpeaker(
+                TtsSettings(engine="piper", model_path=str(model), piper_exe=str(exe)),
+                AudioSettings(),
+            )
+            with (
+                patch("live_translator.tts.speaker.resolve_piper_exe", return_value=str(exe)),
+                patch("live_translator.tts.speaker.resolve_trusted_path", return_value=model),
+                patch(
+                    "live_translator.tts.speaker.approved_runtime_root_for",
+                    return_value=root.resolve(),
+                ),
+                patch("live_translator.tts.speaker.find_runtime_manifest"),
+                patch("live_translator.tts.speaker.load_manifest"),
+                patch(
+                    "live_translator.tts.speaker.verify_manifest",
+                    side_effect=AssetIntegrityError("modified piper.exe"),
+                ),
+                patch("live_translator.tts.speaker.subprocess.Popen") as popen,
+            ):
+                with self.assertRaisesRegex(AssetIntegrityError, "modified piper.exe"):
+                    speaker._synthesize_piper("hello", root / "output.wav")
+
+            popen.assert_not_called()
+
+    def test_successful_piper_integrity_check_is_cached(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            exe, model = self._piper_assets(root)
+            config = model.with_suffix(".onnx.json")
+            verified = {
+                "tools/Piper/piper.exe": exe,
+                "models/TTS/voice.onnx": model,
+                "models/TTS/voice.onnx.json": config,
+            }
+            speaker = TtsSpeaker(
+                TtsSettings(engine="piper", model_path=str(model), piper_exe=str(exe)),
+                AudioSettings(),
+            )
+            with (
+                patch("live_translator.tts.speaker.resolve_piper_exe", return_value=str(exe)),
+                patch("live_translator.tts.speaker.resolve_trusted_path", return_value=model),
+                patch(
+                    "live_translator.tts.speaker.approved_runtime_root_for",
+                    return_value=root.resolve(),
+                ),
+                patch("live_translator.tts.speaker.find_runtime_manifest"),
+                patch("live_translator.tts.speaker.load_manifest"),
+                patch("live_translator.tts.speaker.verify_manifest", return_value=verified) as verify,
+            ):
+                speaker._resolve_piper_assets()
+                speaker._resolve_piper_assets()
+
+            verify.assert_called_once()
+            self.assertEqual(speaker._verified_piper_assets, (str(exe), model))
+
     def test_piper_length_scale_is_passed_at_process_startup(self) -> None:
         speaker = TtsSpeaker(
             TtsSettings(engine="piper", model_path="voice.onnx", length_scale=1.0),

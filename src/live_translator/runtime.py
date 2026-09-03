@@ -177,6 +177,44 @@ def resolve_trusted_path(path: str | Path) -> Path:
     return resolved
 
 
+def approved_runtime_root_for(path: str | Path) -> Path:
+    """Return the approved root containing an already resolved runtime path."""
+    resolved = Path(path).resolve()
+    containing = [root.resolve() for root in approved_runtime_roots() if _is_within(resolved, root)]
+    if not containing:
+        raise UntrustedRuntimePath(
+            f"'{resolved}' is outside every approved runtime location."
+        )
+    return max(containing, key=lambda root: len(root.parts))
+
+
+def find_runtime_manifest(runtime_root: str | Path | None = None) -> Path:
+    """Find the application-owned manifest.
+
+    When ``runtime_root`` is provided, only that approved root is searched.
+    Callers verifying assets from a known root must use this form so a manifest
+    belonging to another approved root cannot be selected accidentally.
+    """
+    searched: list[str] = []
+    roots = (
+        (Path(runtime_root).resolve(),)
+        if runtime_root is not None
+        else tuple(root.resolve() for root in approved_runtime_roots())
+    )
+    for root in roots:
+        candidates = (
+            root / "runtime-assets.manifest.json",
+            root / "packaging" / "runtime-assets.manifest.json",
+        )
+        for candidate in candidates:
+            searched.append(str(candidate))
+            if candidate.is_file():
+                return candidate
+    raise FileNotFoundError(
+        "Runtime asset manifest was not found. Searched: " + ", ".join(searched)
+    )
+
+
 def _is_within(path: Path, root: Path) -> bool:
     """Containment check that stays correct on Windows, where two paths
     naming the same location can differ in case (NTFS is case-insensitive)

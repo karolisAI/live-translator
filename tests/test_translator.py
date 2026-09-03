@@ -1,11 +1,116 @@
 import os
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
+from live_translator.config import TranslationSettings
+from live_translator.errors import AssetIntegrityError
 from live_translator.mt import translator
-from live_translator.mt.translator import _argos_package_path, validate_override_dir
+from live_translator.mt.translator import (
+    TranslationEngine,
+    _argos_package_path,
+    validate_override_dir,
+)
+
+
+class ArgosIntegrityIntegrationTests(unittest.TestCase):
+    def _package(self, root: Path) -> Path:
+        package = root / "en_de"
+        (package / "model").mkdir(parents=True)
+        (package / "sentencepiece.model").write_bytes(b"tokenizer")
+        return package
+
+    def _modules(self, events: list[str]):
+        ctranslate2 = SimpleNamespace(
+            Translator=MagicMock(side_effect=lambda *_: events.append("translator") or object())
+        )
+        sentencepiece = SimpleNamespace(
+            SentencePieceProcessor=MagicMock(
+                side_effect=lambda **_: events.append("tokenizer") or object()
+            )
+        )
+        return ctranslate2, sentencepiece
+
+    def test_integrity_is_verified_before_model_loading(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            package = self._package(Path(temp_dir))
+            events: list[str] = []
+            ctranslate2, sentencepiece = self._modules(events)
+            with (
+                patch.dict(
+                    sys.modules,
+                    {"ctranslate2": ctranslate2, "sentencepiece": sentencepiece},
+                ),
+                patch("live_translator.mt.translator.configure_argos_runtime"),
+                patch("live_translator.mt.translator._argos_package_path", return_value=package),
+                patch("live_translator.mt.translator.find_runtime_manifest"),
+                patch("live_translator.mt.translator.load_manifest"),
+                patch(
+                    "live_translator.mt.translator.verify_manifest_root",
+                    side_effect=lambda *_: events.append("integrity"),
+                ),
+            ):
+                TranslationEngine(
+                    TranslationSettings(engine="argos", source_language="en", target_language="de")
+                ).prepare()
+
+        self.assertEqual(events, ["integrity", "translator", "tokenizer"])
+
+    def test_failed_integrity_blocks_model_loading(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            package = self._package(Path(temp_dir))
+            events: list[str] = []
+            ctranslate2, sentencepiece = self._modules(events)
+            with (
+                patch.dict(
+                    sys.modules,
+                    {"ctranslate2": ctranslate2, "sentencepiece": sentencepiece},
+                ),
+                patch("live_translator.mt.translator.configure_argos_runtime"),
+                patch("live_translator.mt.translator._argos_package_path", return_value=package),
+                patch("live_translator.mt.translator.find_runtime_manifest"),
+                patch("live_translator.mt.translator.load_manifest"),
+                patch(
+                    "live_translator.mt.translator.verify_manifest_root",
+                    side_effect=AssetIntegrityError("modified model"),
+                ),
+            ):
+                with self.assertRaisesRegex(AssetIntegrityError, "modified"):
+                    TranslationEngine(
+                        TranslationSettings(
+                            engine="argos", source_language="en", target_language="de"
+                        )
+                    ).prepare()
+
+        self.assertEqual(events, [])
+
+    def test_successful_integrity_check_is_cached_for_the_engine(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            package = self._package(Path(temp_dir))
+            events: list[str] = []
+            ctranslate2, sentencepiece = self._modules(events)
+            with (
+                patch.dict(
+                    sys.modules,
+                    {"ctranslate2": ctranslate2, "sentencepiece": sentencepiece},
+                ),
+                patch("live_translator.mt.translator.configure_argos_runtime"),
+                patch("live_translator.mt.translator._argos_package_path", return_value=package),
+                patch("live_translator.mt.translator.find_runtime_manifest"),
+                patch("live_translator.mt.translator.load_manifest"),
+                patch("live_translator.mt.translator.verify_manifest_root") as verify,
+            ):
+                engine = TranslationEngine(
+                    TranslationSettings(engine="argos", source_language="en", target_language="de")
+                )
+                engine.prepare()
+                engine.prepare()
+
+        verify.assert_called_once()
+        self.assertEqual(events, ["translator", "tokenizer"])
 
 
 class ArgosPackagePathTests(unittest.TestCase):
