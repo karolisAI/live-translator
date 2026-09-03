@@ -61,15 +61,24 @@ jobs:
           printf '%s' "$PR_BODY" > pr_body.txt
           fail=0
 
+          # The template's instructional HTML comment block is left in place by
+          # design (the template tells contributors they may leave it) and it
+          # names the placeholder text verbatim to explain what to replace, so
+          # checks 2 and 3 run against the body with every <!-- ... --> block
+          # stripped, not the raw body. Without this, a fully filled-in PR
+          # still fails: the comment's own explanation of "_No response_"
+          # matches check 2, forever.
+          perl -0777 -pe 's/<!--.*?-->//gs' pr_body.txt > pr_body_visible.txt
+
           # 2. Untouched template placeholders left behind.
-          if grep -qF '_No response_' pr_body.txt; then
+          if grep -qF '_No response_' pr_body_visible.txt; then
             echo "::error::PR description still contains a '_No response_' placeholder. Replace every placeholder with real content."
             fail=1
           fi
 
           # 3. Required template sections still present.
           for section in Description Reason Changes Testing; do
-            if ! grep -qiE "^#{1,6}[[:space:]]+${section}([[:space:]]|$)" pr_body.txt; then
+            if ! grep -qiE "^#{1,6}[[:space:]]+${section}([[:space:]]|$)" pr_body_visible.txt; then
               echo "::error::PR description is missing the required '## ${section}' section."
               fail=1
             fi
