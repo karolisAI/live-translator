@@ -78,7 +78,7 @@ Evidence collected on Windows 11 on 2026-09-03:
 - A real PyInstaller build passed source preflight, dist validation, packaged
   `--help`, packaged `en` to `de` translation, and packaged `doctor` checks for
   Argos and Piper.
-- The automated suite passed 402 tests; four environment-dependent tests were
+- The automated suite passed 403 tests; four environment-dependent tests were
   skipped. Negative tests prove that integrity failures block Piper execution,
   Parakeet recognizer construction and Argos model loading.
 

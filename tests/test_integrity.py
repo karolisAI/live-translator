@@ -72,9 +72,13 @@ class RuntimeAssetIntegrityTests(unittest.TestCase):
                 expected_sha256="0" * 64,
             )
 
-    def test_absolute_manifest_path_is_rejected(self) -> None:
+    def test_posix_absolute_manifest_path_is_rejected(self) -> None:
+        with self.assertRaisesRegex(UntrustedRuntimePath, "relative"):
+            resolve_asset_path(self.root, "/models/example.bin")
+
+    def test_windows_drive_manifest_path_is_rejected(self) -> None:
         with self.assertRaisesRegex(UntrustedRuntimePath, "drive"):
-            resolve_asset_path(self.root, self.asset.as_posix())
+            resolve_asset_path(self.root, "C:/models/example.bin")
 
     def test_parent_traversal_is_rejected(self) -> None:
         with self.assertRaisesRegex(UntrustedRuntimePath, "relative"):
