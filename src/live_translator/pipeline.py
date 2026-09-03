@@ -41,6 +41,7 @@ class LocalTranslatorPipeline:
         playback, it fails during rendering, one worker earlier.
         """
         self._capture_limits: CaptureLimits | None = None
+        self._capture_failure_warned = False
         self._show_text = False
 
     def prepare(self, *, include_tts: bool = True) -> None:
@@ -535,7 +536,11 @@ class LocalTranslatorPipeline:
         if debug_dir is None:
             return None
         path = debug_dir / segment_audio_name(segment_number)
-        write_wav(path, audio, self._config.audio.sample_rate)
+        try:
+            write_wav(path, audio, self._config.audio.sample_rate)
+        except OSError as exc:
+            self._warn_capture_failed(path, exc)
+            return None
         self._note_capture(path)
         return path
 
@@ -543,19 +548,45 @@ class LocalTranslatorPipeline:
         if wav_path is None:
             return
         note_path = wav_path.with_suffix(NOTE_SUFFIX)
-        note_path.write_text(
-            "\n".join(
-                [
-                    f"source={source}",
-                    f"target={target}",
-                    f"sample_rate={self._config.audio.sample_rate}",
-                    f"input_device={self._config.audio.input_device}",
-                    f"input_gain={self._config.audio.input_gain}",
-                ]
-            ),
-            encoding="utf-8",
-        )
+        try:
+            note_path.write_text(
+                "\n".join(
+                    [
+                        f"source={source}",
+                        f"target={target}",
+                        f"sample_rate={self._config.audio.sample_rate}",
+                        f"input_device={self._config.audio.input_device}",
+                        f"input_gain={self._config.audio.input_gain}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            self._warn_capture_failed(note_path, exc)
+            return
         self._note_capture(note_path)
+
+    def _warn_capture_failed(self, path: Path, error: OSError) -> None:
+        """Report a capture write the operating system refused, once per meeting.
+
+        Without this the OSError travels up to the recognition worker, which
+        treats any escaping exception as a fatal stage failure and stops the
+        session. That is the wrong trade twice over: _start_diagnostics already
+        decided a meeting must not end over diagnostics, and capture tends to be
+        on precisely because something is already being investigated.
+
+        Once per meeting, because the realistic causes -- a full disk, a
+        permission change, a scanner or sync client holding the file -- fail on
+        every phrase, and a warning printed every few seconds during a call is
+        its own kind of broken.
+        """
+        if self._capture_failure_warned:
+            return
+        self._capture_failure_warned = True
+        print(
+            f"Warning: diagnostic capture could not write {path}: {error}. "
+            "The meeting continues; further capture failures are not reported."
+        )
 
     def _print_audio_route(self) -> None:
         print("Audio routing:")
