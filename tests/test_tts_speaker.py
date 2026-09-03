@@ -1,11 +1,12 @@
 import json
 import os
+import subprocess
 import unittest
 from pathlib import Path
 from queue import Queue
 from tempfile import TemporaryDirectory
 from threading import Event
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import numpy as np
 
@@ -241,6 +242,66 @@ class TtsSpeakerTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "exited unexpectedly"):
                 speaker.speak("Hello")
+
+    def test_final_stderr_is_drained_before_reporting_an_unexpected_exit(self) -> None:
+        """stdout EOF can win the race with Piper's final stderr line. Piper
+        gets a chance to write that line and exit naturally before it is ever
+        terminated, then stderr is collected before the error is built."""
+        speaker = TtsSpeaker(
+            TtsSettings(engine="piper", model_path="voice.onnx"),
+            AudioSettings(),
+        )
+        release_stderr = Event()
+
+        def final_stderr():
+            release_stderr.wait()
+            yield "voice model failed to load\n"
+
+        fake = _FakeProcess(stdout_lines=[], stderr_lines=final_stderr())
+
+        def finish_naturally(*, timeout: float) -> int:
+            release_stderr.set()
+            fake.mark_exited()
+            return 0
+
+        fake.wait.side_effect = finish_naturally
+
+        with (
+            patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
+            patch("live_translator.tts.speaker.subprocess.Popen", return_value=fake),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "voice model failed to load"):
+                speaker.speak("Hello")
+
+        fake.kill.assert_not_called()
+        fake.wait.assert_called_once_with(timeout=1)
+
+    def test_stdout_eof_from_a_process_that_stays_alive_is_bounded(self) -> None:
+        """A malformed child may close stdout but keep running with stderr
+        open. It must be terminated, and stderr collection must have a timeout
+        rather than hanging the meeting indefinitely."""
+        speaker = TtsSpeaker(
+            TtsSettings(engine="piper", model_path="voice.onnx"),
+            AudioSettings(),
+        )
+        fake = _FakeProcess(stdout_lines=[], stderr_lines=_BlockingIter())
+        fake.wait.side_effect = [
+            subprocess.TimeoutExpired("piper.exe", 1),
+            0,
+        ]
+
+        with (
+            patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
+            patch("live_translator.tts.speaker.subprocess.Popen", return_value=fake),
+        ):
+            piper = speaker._get_resident_piper()
+            with patch.object(piper._stderr_thread, "join") as join:
+                with self.assertRaisesRegex(RuntimeError, "diagnostic timeout"):
+                    piper.synthesize("Hello", Path("hello.wav"))
+
+        fake.kill.assert_called_once()
+        self.assertEqual(fake.wait.call_args_list, [call(timeout=1), call(timeout=5)])
+        join.assert_called_once_with(timeout=1)
 
     def test_resident_process_is_reused_across_multiple_phrases(self) -> None:
         """The whole point of this design: one process serves every phrase in

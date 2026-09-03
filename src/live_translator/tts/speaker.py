@@ -62,8 +62,9 @@ class _PersistentPiper:
 
         self._responses: Queue[str | None] = Queue()
         self._stderr_tail: deque[str] = deque(maxlen=20)
+        self._stderr_thread = Thread(target=self._drain_stderr, daemon=True)
         Thread(target=self._drain_stdout, daemon=True).start()
-        Thread(target=self._drain_stderr, daemon=True).start()
+        self._stderr_thread.start()
 
     def _drain_stdout(self) -> None:
         try:
@@ -119,7 +120,19 @@ class _PersistentPiper:
                 f"Piper did not finish within {self._timeout:g}s and was terminated."
             ) from exc
         if response is None:
+            # stdout and stderr are drained concurrently.  Seeing stdout EOF
+            # does not mean the stderr reader has copied Piper's final crash
+            # line yet. Give Piper a brief chance to finish naturally so that
+            # line can still be written; if it stays alive after closing
+            # stdout, terminate it because its request protocol is unusable.
+            # Every wait is bounded so a malformed child cannot hang the
+            # meeting while error details are being collected.
+            self._finish_process(graceful_timeout=1)
+            self._stderr_thread.join(timeout=1)
             detail = "".join(self._stderr_tail).strip()
+            if self._stderr_thread.is_alive():
+                incomplete = "Piper's stderr did not close before the diagnostic timeout."
+                detail = f"{detail}\n{incomplete}" if detail else incomplete
             raise RuntimeError("Piper process exited unexpectedly" + (f": {detail}" if detail else "."))
         if response.strip() != str(wav_path):
             # Piper echoes back the output_file it just wrote, one line per
@@ -137,15 +150,33 @@ class _PersistentPiper:
                 f"instead of {str(wav_path)!r}) and was terminated."
             )
 
+    def _finish_process(self, *, graceful_timeout: float) -> None:
+        """Reap Piper, terminating it only if it does not exit in time."""
+        try:
+            self._process.wait(timeout=graceful_timeout)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+
+        if self._process.poll() is None:
+            try:
+                self._process.kill()
+            except OSError:
+                # The process may have exited between poll() and kill().
+                pass
+        try:
+            self._process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            # kill() should make wait() immediate, but shutdown must remain
+            # bounded even for an unusual or mocked process implementation.
+            pass
+
     def close(self) -> None:
         try:
             self._process.stdin.close()
         except OSError:
             pass
-        try:
-            self._process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self._process.kill()
+        self._finish_process(graceful_timeout=5)
 
 
 @dataclass(frozen=True)
