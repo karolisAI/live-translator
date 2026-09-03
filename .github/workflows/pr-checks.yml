@@ -54,7 +54,7 @@ jobs:
 
           # 1. Empty (or whitespace-only) body.
           if [ -z "$(printf '%s' "${PR_BODY:-}" | tr -d '[:space:]')" ]; then
-            echo "::error::PR description is empty. Fill in the template: Summary, Changes, Testing."
+            echo "::error::PR description is empty. Fill in the template: Description, Reason, Changes, Testing."
             exit 1
           fi
 
@@ -68,7 +68,7 @@ jobs:
           fi
 
           # 3. Required template sections still present.
-          for section in Summary Changes Testing; do
+          for section in Description Reason Changes Testing; do
             if ! grep -qiE "^#{1,6}[[:space:]]+${section}([[:space:]]|$)" pr_body.txt; then
               echo "::error::PR description is missing the required '## ${section}' section."
               fail=1

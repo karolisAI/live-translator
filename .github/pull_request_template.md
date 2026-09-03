@@ -9,15 +9,20 @@ Thanks for the contribution! A couple of automated checks run on every PR (see
        chore/Bump onnxruntime pin
      Allowed types: feat, fix, docs, chore, refactor, perf, test, build, ci, revert
 
-  2. This DESCRIPTION must be filled in: every section below must have real
-     content, with no "_No response_" placeholders left behind.
+  2. This BODY must be filled in: every section below (Description, Reason,
+     Changes, Testing) must have real content, with no "_No response_"
+     placeholders left behind.
 
 Fill in each section, replacing the "_No response_" line under it with your own
 text. You can leave these instruction comments in place; they are not rendered.
 -->
 
-## Summary
-<!-- What does this PR do, and why? -->
+## Description
+<!-- What does this PR do? -->
+_No response_
+
+## Reason
+<!-- Why is this change needed? -->
 _No response_
 
 ## Changes
