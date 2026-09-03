@@ -84,9 +84,23 @@ class LocalTranslatorPipeline:
         return result.text
 
     def translate_once(self, seconds: float | None = None, speak: bool = True) -> str:
-        self.prepare(include_tts=speak)
-        translator = self._get_translator()
-        speaker = self._get_speaker() if speak else None
+        try:
+            self.prepare(include_tts=speak)
+            translator = self._get_translator()
+            speaker = self._get_speaker() if speak else None
+            return self._translate_once(seconds, translator, speaker)
+        finally:
+            # A resident Piper process started by warm_up()/speak() above
+            # would otherwise outlive this one-shot command -- subprocess
+            # children are not killed automatically when this process exits.
+            # Inside the try so a failure part way through prepare() cannot
+            # leave one behind either.
+            if speak:
+                self._get_speaker().close()
+
+    def _translate_once(
+        self, seconds: float | None, translator: TranslationEngine, speaker: TtsSpeaker | None
+    ) -> str:
         start = perf_counter()
         audio = record_mono(self._config.audio, seconds)
 
@@ -139,6 +153,24 @@ class LocalTranslatorPipeline:
         self._show_text = show_text
         self._print_audio_route()
         self.prepare()
+        try:
+            self._run_meeting(chunker_mode, debug_audio_dir, diagnostics=diagnostics)
+        finally:
+            # Closed here rather than only around the worker loop: prepare()
+            # has already started a resident Piper process by this point, and
+            # several things between here and the loop can still raise (an
+            # unsupported chunker mode, a device that will not open). Without
+            # this, those paths leave an orphaned piper.exe behind -- verified
+            # by process count, not assumed.
+            self._get_speaker().close()
+
+    def _run_meeting(
+        self,
+        chunker_mode: str | None,
+        debug_audio_dir: str | Path | None,
+        *,
+        diagnostics: bool,
+    ) -> None:
         translator = self._get_translator()
         speaker = self._get_speaker()
         debug_dir = self._start_diagnostics(
@@ -202,7 +234,17 @@ class LocalTranslatorPipeline:
         except KeyboardInterrupt:
             interrupted = True
         finally:
-            workers.stop()
+            # The recognition worker can sit inside synthesis for up to
+            # tts.piper_timeout_seconds. Joining for less than that returns
+            # while it is still running, and the close() in loopback's finally
+            # then tears the resident Piper process down underneath it: the
+            # worker's own call fails with a confusing "exited unexpectedly",
+            # and _get_resident_piper can start a replacement that nothing
+            # closes -- the orphaned piper.exe close() exists to prevent. The
+            # default 10s was shorter than the 30s Piper timeout, so this was
+            # reachable whenever Piper hung, which is the case the timeout is
+            # there for in the first place.
+            workers.stop(join_timeout=self._config.tts.piper_timeout_seconds + 5.0)
         workers.raise_if_failed()
         if interrupted:
             print("Meeting translation ended.")

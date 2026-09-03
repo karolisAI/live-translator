@@ -1,15 +1,186 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty, Queue
+from threading import Lock, Thread
 from typing import Any
 
 from live_translator.audio.io import play_mono, read_wav_mono
 from live_translator.config import AudioSettings, TtsSettings
 from live_translator.errors import MissingDependency
 from live_translator.runtime import resolve_trusted_path
+
+
+class _PersistentPiper:
+    """One `piper.exe`, fed via `--json-input`, kept alive for the session.
+
+    Spawning a fresh process per phrase pays a fixed ~0.41s (process start,
+    voice model reload) on top of the ~0.02s/word Piper itself needs once
+    warm -- measured 2026-08-17, isolated from playback. This pays that cost
+    once, at construction, instead of on every phrase.
+
+    stdout is drained on a background thread because a hung request has to
+    be detectable with a timeout, and a blocking read on a Windows pipe has
+    no timeout of its own. stderr gets its own draining thread too: Piper
+    logs one "real-time factor" line per phrase, and an unread pipe fills
+    its OS buffer over a long meeting and blocks the child outright.
+    """
+
+    def __init__(self, piper_exe: str, model_path: Path, tts_settings: TtsSettings) -> None:
+        args = [piper_exe, "--model", str(model_path), "--json-input"]
+        if tts_settings.speaker:
+            args += ["--speaker", tts_settings.speaker]
+        if tts_settings.length_scale is not None:
+            args += ["--length_scale", str(tts_settings.length_scale)]
+
+        self._timeout = tts_settings.piper_timeout_seconds
+        try:
+            self._process = subprocess.Popen(
+                args,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                # Named explicitly rather than left to the locale. Without
+                # this Python encodes with the console codepage (cp1252 here),
+                # which cannot represent Polish or Czech characters -- the
+                # cause of a meeting-ending UnicodeEncodeError that has been in
+                # the product since May. `errors="replace"` covers the read
+                # side, where the only thing this cares about is that a line
+                # arrived at all, never what it says.
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+        except OSError as exc:
+            raise RuntimeError(f"Piper executable could not be run ({piper_exe}): {exc}") from exc
+
+        self._responses: Queue[str | None] = Queue()
+        self._stderr_tail: deque[str] = deque(maxlen=20)
+        self._stderr_thread = Thread(target=self._drain_stderr, daemon=True)
+        Thread(target=self._drain_stdout, daemon=True).start()
+        self._stderr_thread.start()
+
+    def _drain_stdout(self) -> None:
+        try:
+            for line in self._process.stdout:
+                self._responses.put(line)
+        finally:
+            # Signals "the process stopped producing output" to synthesize(),
+            # whether that's a clean exit or a crash.
+            self._responses.put(None)
+
+    def _drain_stderr(self) -> None:
+        for line in self._process.stderr:
+            self._stderr_tail.append(line)
+
+    def is_alive(self) -> bool:
+        return self._process.poll() is None
+
+    def synthesize(self, text: str, wav_path: Path) -> None:
+        """Ask the resident process to render `text` to `wav_path`.
+
+        The absolute path is what `--json-input` actually honors here --
+        `--output_dir` was tried and does not override where this Piper
+        build writes; passing the full path per request sidesteps that
+        rather than depending on it.
+        """
+        if not self.is_alive():
+            # TtsSpeaker._get_resident_piper already replaces a dead process
+            # rather than reusing it, so this is belt-and-braces -- but a
+            # queue left holding a late answer from a previous request is
+            # exactly the state that must never serve a new one, so the guard
+            # belongs on the object itself and not only on today's caller.
+            raise RuntimeError("Piper process is no longer running.")
+        request = json.dumps({"text": text, "output_file": str(wav_path)})
+        try:
+            self._process.stdin.write(request + "\n")
+            self._process.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError) as exc:
+            # TextIO raises ValueError, rather than OSError, if the stream was
+            # already closed. TtsSpeaker serializes synthesis against close(),
+            # but keep this boundary defensive for direct/internal callers and
+            # for a pipe that fails independently of normal shutdown.
+            raise RuntimeError(f"Piper process is no longer running: {exc}") from exc
+
+        try:
+            response = self._responses.get(timeout=self._timeout)
+        except Empty as exc:
+            # Kill it rather than leave it running. Requests and responses are
+            # matched only by order, so a process that answers *after* its
+            # request timed out hands that stale answer to the next phrase and
+            # every phrase after it -- reporting success while the WAV it names
+            # belongs to the previous request. One slow phrase would silently
+            # break synthesis for the rest of the meeting. A dead process makes
+            # is_alive() false, so the next call transparently starts a fresh
+            # one instead.
+            self._process.kill()
+            raise RuntimeError(
+                f"Piper did not finish within {self._timeout:g}s and was terminated."
+            ) from exc
+        if response is None:
+            # stdout and stderr are drained concurrently.  Seeing stdout EOF
+            # does not mean the stderr reader has copied Piper's final crash
+            # line yet. Give Piper a brief chance to finish naturally so that
+            # line can still be written; if it stays alive after closing
+            # stdout, terminate it because its request protocol is unusable.
+            # Every wait is bounded so a malformed child cannot hang the
+            # meeting while error details are being collected.
+            self._finish_process(graceful_timeout=1)
+            self._stderr_thread.join(timeout=1)
+            detail = "".join(self._stderr_tail).strip()
+            if self._stderr_thread.is_alive():
+                incomplete = "Piper's stderr did not close before the diagnostic timeout."
+                detail = f"{detail}\n{incomplete}" if detail else incomplete
+            raise RuntimeError("Piper process exited unexpectedly" + (f": {detail}" if detail else "."))
+        if response.strip() != str(wav_path):
+            # Piper echoes back the output_file it just wrote, one line per
+            # request -- verified against the bundled piper.exe, which prints
+            # the exact path. Anything else means this answer belongs to some
+            # other request, so the ordering everything here relies on has
+            # broken. Without this check render() would go on to read a WAV
+            # that Piper has not written yet and hand back whatever it found,
+            # silently, for the rest of the meeting. Kill rather than resync:
+            # a stream whose order is already wrong cannot be trusted to be
+            # right again, and a dead process is transparently replaced.
+            self._process.kill()
+            raise RuntimeError(
+                f"Piper answered for a different request ({response.strip()!r} "
+                f"instead of {str(wav_path)!r}) and was terminated."
+            )
+
+    def _finish_process(self, *, graceful_timeout: float) -> None:
+        """Reap Piper, terminating it only if it does not exit in time."""
+        try:
+            self._process.wait(timeout=graceful_timeout)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+
+        if self._process.poll() is None:
+            try:
+                self._process.kill()
+            except OSError:
+                # The process may have exited between poll() and kill().
+                pass
+        try:
+            self._process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            # kill() should make wait() immediate, but shutdown must remain
+            # bounded even for an unusual or mocked process implementation.
+            pass
+
+    def close(self) -> None:
+        try:
+            self._process.stdin.close()
+        except OSError:
+            pass
+        self._finish_process(graceful_timeout=5)
 
 
 @dataclass(frozen=True)
@@ -29,6 +200,14 @@ class TtsSpeaker:
     def __init__(self, tts_settings: TtsSettings, audio_settings: AudioSettings) -> None:
         self._tts_settings = tts_settings
         self._audio_settings = audio_settings
+        self._resident_piper: _PersistentPiper | None = None
+        # This object owns the resident process. Serialize the complete Piper
+        # request against close(), not merely the stdin write: request/response
+        # matching is positional, and a partial lock would still allow two
+        # callers to consume each other's responses. Once closed, a session's
+        # speaker is never reopened.
+        self._piper_lifecycle_lock = Lock()
+        self._piper_closed = False
 
     def speak(self, text: str) -> None:
         if not text:
@@ -93,74 +272,79 @@ class TtsSpeaker:
         engine.runAndWait()
 
     def warm_up(self) -> None:
-        """Pay Piper's first-run cost at startup rather than on the first phrase.
+        """Start the resident Piper process now, paying its model-load cost
+        at startup instead of on whatever phrase happens to be first.
 
-        Measured 2026-08-18 over a two-minute run: the first synthesis of a session
-        took 3.61s against a 0.68s median for the rest of the run. The cost is
-        loading the voice model and whatever the OS has not cached yet, and it lands
-        on the first thing the speaker says, which is the worst place for it.
+        Measured 2026-08-18 over a two-minute run: the first synthesis of a
+        session took 3.61s against a 0.68s median for the rest of the run
+        under the old per-phrase-process design. A resident process pays
+        that load once, here.
 
-        Synthesises to a temporary file and discards it, so nothing is heard. A
-        failure is deliberately not fatal: `validate()` has already checked the
-        assets, and a warm-up that cannot run means a slow first phrase, not a
-        broken session.
+        A failure is deliberately not fatal: `validate()` has already checked
+        the assets, and a warm-up that cannot run means a slow first phrase,
+        not a broken session -- `_synthesize_piper` gets its own chance to
+        start the process on the first real call.
         """
         if self._tts_settings.engine.lower() not in {"piper", "piper-cli"}:
             return
-
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp:
             wav_path = Path(temp.name)
         try:
             self._synthesize_piper("Warming up.", wav_path)
+            # Also pay read_wav_mono's own first-call cost here rather than on
+            # the first real phrase. Measured 2026-08-26: with the process
+            # already resident, synthesize() itself is fast (~0.12s) on the
+            # first real call, but read_wav_mono went 0.69s -> 0.02s between
+            # its first and second invocations regardless -- a cost that
+            # belongs to that function, not to Piper, and warm-up should
+            # absorb it too since the whole point is a fast first phrase.
+            read_wav_mono(wav_path)
         except Exception:
             return
         finally:
             wav_path.unlink(missing_ok=True)
 
-    def _synthesize_piper(self, text: str, wav_path: Path) -> None:
-        """Run Piper once, writing audio to `wav_path`. Does not play anything."""
+    def _get_resident_piper(self) -> _PersistentPiper:
+        if self._piper_closed:
+            raise RuntimeError("Piper speaker is closed and cannot be restarted.")
+        if self._resident_piper is not None and self._resident_piper.is_alive():
+            return self._resident_piper
+        if self._resident_piper is not None:
+            # Reap the dead one before replacing it, rather than dropping the
+            # reference and leaving the OS handle around.
+            self._resident_piper.close()
+            self._resident_piper = None
         piper_exe, model_path = self._resolve_piper_assets()
+        self._resident_piper = _PersistentPiper(piper_exe, model_path, self._tts_settings)
+        return self._resident_piper
 
-        command = [
-            piper_exe,
-            "--model",
-            str(model_path),
-            "--output_file",
-            str(wav_path),
-        ]
-        if self._tts_settings.speaker:
-            command.extend(["--speaker", self._tts_settings.speaker])
-        if self._tts_settings.length_scale is not None:
-            command.extend(["--length_scale", str(self._tts_settings.length_scale)])
+    def _synthesize_piper(self, text: str, wav_path: Path) -> None:
+        """Hand text to the resident Piper process, writing audio to `wav_path`.
 
-        try:
-            completed = subprocess.run(
-                command,
-                input=text,
-                text=True,
-                encoding="utf-8",
-                capture_output=True,
-                check=False,
-                timeout=self._tts_settings.piper_timeout_seconds,
-            )
-        except subprocess.TimeoutExpired as exc:
-            # subprocess.run already kills the child process itself before
-            # raising this -- nothing left to clean up, just translate it
-            # into a clear error instead of letting it propagate raw.
-            raise RuntimeError(
-                f"Piper ({piper_exe}) did not finish within "
-                f"{self._tts_settings.piper_timeout_seconds:.0f}s and was terminated."
-            ) from exc
-        except OSError as exc:
-            # A trusted, existing path can still fail to actually run --
-            # permissions, a corrupted binary, or (Windows) "not a valid
-            # Win32 application". subprocess.run raises OSError for these
-            # rather than returning a CompletedProcess, so the returncode
-            # check below never sees them; without this they'd propagate
-            # as a raw OSError instead of a clear, actionable error.
-            raise RuntimeError(f"Piper executable could not be run ({piper_exe}): {exc}") from exc
-        if completed.returncode != 0:
-            raise RuntimeError(completed.stderr.strip() or "Piper failed to synthesize audio.")
+        Starts the process on first use if `warm_up()` was never called --
+        the one-shot `say`/`translate-once` commands reach here directly --
+        so every caller gets a working synthesis path without needing to
+        know the process is resident at all. Also restarts it transparently
+        if a previous request left it dead.
+        """
+        with self._piper_lifecycle_lock:
+            piper = self._get_resident_piper()
+            piper.synthesize(text, wav_path)
+
+    def close(self) -> None:
+        """Stop the resident Piper process, if one was ever started.
+
+        `subprocess.Popen`'s children are not killed automatically when this
+        process exits on Windows -- skipping this leaks a `piper.exe` past
+        the end of every session that used one.
+        """
+        with self._piper_lifecycle_lock:
+            if self._piper_closed:
+                return
+            self._piper_closed = True
+            if self._resident_piper is not None:
+                self._resident_piper.close()
+                self._resident_piper = None
 
     def render(self, text: str) -> RenderedSpeech | None:
         """Turn text into audio without playing it.

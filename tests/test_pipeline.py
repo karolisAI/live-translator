@@ -4,9 +4,9 @@ from contextlib import redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from live_translator.config import AppConfig, AsrSettings, RealtimeSettings
+from live_translator.config import AppConfig, AsrSettings, RealtimeSettings, TtsSettings
 from live_translator.asr.base import TranscriptResult
 from live_translator.errors import ModelNotPrepared, UntrustedRuntimePath
 from live_translator.pipeline import LocalTranslatorPipeline
@@ -31,6 +31,9 @@ class FakeSpeaker:
 
     def speak(self, text: str) -> None:
         self.spoken.append(text)
+
+    def close(self) -> None:
+        pass
 
 
 class PipelineTests(unittest.TestCase):
@@ -340,6 +343,104 @@ class PrintTranslationTests(unittest.TestCase):
             pipeline._print_translation("klarer Satz", "clear sentence", low_confidence=False)
 
         self.assertNotIn("[low confidence", buffer.getvalue())
+
+
+class SpeakerShutdownTests(unittest.TestCase):
+    """prepare() starts a resident Piper process, and a subprocess child is
+    not killed automatically when this process exits. Every exit path out of
+    a command that called prepare() therefore has to close the speaker, not
+    just the happy one."""
+
+    def _pipeline_with_fake_speaker(self):
+        pipeline = LocalTranslatorPipeline(AppConfig())
+        speaker = FakeSpeaker()
+        speaker.closed = 0
+        speaker.close = lambda: setattr(speaker, "closed", speaker.closed + 1)
+        return pipeline, speaker
+
+    def test_loopback_closes_the_speaker_when_it_fails_before_the_worker_loop(self) -> None:
+        """An unsupported chunker raises after prepare() has already warmed
+        Piper up. Verified against a real process count before this was
+        fixed: it left an orphaned piper.exe behind."""
+        pipeline, speaker = self._pipeline_with_fake_speaker()
+
+        with (
+            patch.object(pipeline, "_print_audio_route"),
+            patch.object(pipeline, "prepare"),
+            patch.object(pipeline, "_get_translator"),
+            patch.object(pipeline, "_get_speaker", return_value=speaker),
+        ):
+            with self.assertRaises(ValueError):
+                pipeline.loopback(chunker_mode="nonsense")
+
+        self.assertEqual(speaker.closed, 1)
+
+    def test_translate_once_closes_the_speaker_when_preparation_fails(self) -> None:
+        pipeline, speaker = self._pipeline_with_fake_speaker()
+
+        with (
+            patch.object(pipeline, "prepare", side_effect=RuntimeError("model exploded")),
+            patch.object(pipeline, "_get_speaker", return_value=speaker),
+        ):
+            with self.assertRaises(RuntimeError):
+                pipeline.translate_once()
+
+        self.assertEqual(speaker.closed, 1)
+
+    def test_shutdown_outwaits_a_phrase_still_blocked_inside_piper(self) -> None:
+        """The join timeout has to be longer than the Piper timeout, or the two
+        fight each other.
+
+        The recognition worker can sit inside synthesis for up to
+        tts.piper_timeout_seconds. If stop() gives up before then it returns
+        while that worker is still running, and the close() in loopback's
+        finally tears the resident process down underneath it -- which both
+        raises a misleading "exited unexpectedly" and lets _get_resident_piper
+        start a replacement nothing will close. The old 10s default was shorter
+        than the 30s Piper timeout, so this was reachable in exactly the case
+        the Piper timeout exists for.
+        """
+        config = AppConfig(
+            tts=TtsSettings(engine="piper", model_path="voice.onnx", piper_timeout_seconds=30.0)
+        )
+        pipeline = LocalTranslatorPipeline(config)
+        speaker = FakeSpeaker()
+        speaker.close = lambda: None
+        workers = Mock()
+        workers.stop_event.is_set.return_value = True  # leave the loop at once
+
+        with (
+            patch.object(pipeline, "_print_audio_route"),
+            patch.object(pipeline, "prepare"),
+            patch.object(pipeline, "_get_translator"),
+            patch.object(pipeline, "_get_speaker", return_value=speaker),
+            patch.object(pipeline, "_start_diagnostics", return_value=None),
+            patch.object(pipeline, "_expire_old_diagnostics"),
+            patch.object(pipeline, "_create_realtime_workers", return_value=workers),
+        ):
+            pipeline.loopback(chunker_mode="fixed")
+
+        join_timeout = workers.stop.call_args.kwargs["join_timeout"]
+        self.assertGreater(
+            join_timeout,
+            config.tts.piper_timeout_seconds,
+            "shutdown must outwait a phrase that is still blocked in synthesis",
+        )
+
+    def test_translate_once_does_not_build_a_speaker_when_not_speaking(self) -> None:
+        """--no-speak must not start a Piper process just to close it."""
+        pipeline = LocalTranslatorPipeline(AppConfig())
+
+        with (
+            patch.object(pipeline, "prepare"),
+            patch.object(pipeline, "_get_translator"),
+            patch.object(pipeline, "_get_speaker") as get_speaker,
+            patch("live_translator.pipeline.record_mono", return_value=[0.0] * 16000),
+            patch.object(pipeline, "_transcribe_audio_if_safe", return_value=None),
+        ):
+            pipeline.translate_once(speak=False)
+
+        get_speaker.assert_not_called()
 
 
 class OfflineStartupOrderTests(unittest.TestCase):
