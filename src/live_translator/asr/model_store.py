@@ -50,8 +50,9 @@ REVISION_FILE = "revision.txt"
 """Records which `ASR_MODEL_REVISION` produced the directory's contents.
 
 Written by `download_model`. A directory populated by hand will not have one,
-which is tolerated; a directory carrying a *different* revision is not, because
-it means these files are not the ones this build was tested against.
+so it must be stamped explicitly before use. Missing and different revisions
+are both rejected because they cannot prove that the directory contains the
+files this build was tested against.
 """
 
 _PREPARE_COMMAND = "live-translator prepare-models --profile <name>"

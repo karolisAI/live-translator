@@ -5,7 +5,7 @@ from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from live_translator.asset_manifest import load_manifest, parse_manifest, verify_manifest
+from live_translator.asset_manifest import _is_excluded, load_manifest, parse_manifest, verify_manifest
 from live_translator.errors import AssetIntegrityError, ManifestValidationError
 
 
@@ -275,6 +275,11 @@ class AssetManifestTests(unittest.TestCase):
                 "models/asr/parakeet-tdt-0.6b-v3",
                 directory,
             )
+
+    def test_plain_exclusion_is_anchored_to_the_protected_root(self) -> None:
+        self.assertTrue(_is_excluded("allowed.tmp", ("allowed.tmp",)))
+        self.assertFalse(_is_excluded("nested/allowed.tmp", ("allowed.tmp",)))
+        self.assertFalse(_is_excluded("nested/file.tmp", ("*.tmp",)))
 
 
 if __name__ == "__main__":

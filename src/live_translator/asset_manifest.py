@@ -309,13 +309,12 @@ def _reject_duplicate_paths(paths, label: str) -> None:
 
 
 def _is_excluded(relative_path: str, patterns: tuple[str, ...]) -> bool:
-    path = PurePosixPath(relative_path)
     for pattern in patterns:
         if pattern.endswith("/**"):
             prefix = pattern[:-3].rstrip("/")
             if relative_path == prefix or relative_path.startswith(prefix + "/"):
                 return True
-        elif path.match(pattern):
+        elif relative_path == pattern:
             return True
     return False
 

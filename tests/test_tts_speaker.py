@@ -102,7 +102,7 @@ class TtsSpeakerTests(unittest.TestCase):
                     "live_translator.tts.speaker.approved_runtime_root_for",
                     return_value=root.resolve(),
                 ),
-                patch("live_translator.tts.speaker.runtime_manifest_path"),
+                patch("live_translator.tts.speaker.find_runtime_manifest"),
                 patch("live_translator.tts.speaker.load_manifest"),
                 patch(
                     "live_translator.tts.speaker.verify_manifest",
@@ -121,9 +121,9 @@ class TtsSpeakerTests(unittest.TestCase):
             exe, model = self._piper_assets(root)
             config = model.with_suffix(".onnx.json")
             verified = {
-                "tools/piper/piper.exe": exe,
-                "models/tts/voice.onnx": model,
-                "models/tts/voice.onnx.json": config,
+                "tools/Piper/piper.exe": exe,
+                "models/TTS/voice.onnx": model,
+                "models/TTS/voice.onnx.json": config,
             }
             speaker = TtsSpeaker(
                 TtsSettings(engine="piper", model_path=str(model), piper_exe=str(exe)),
@@ -136,7 +136,7 @@ class TtsSpeakerTests(unittest.TestCase):
                     "live_translator.tts.speaker.approved_runtime_root_for",
                     return_value=root.resolve(),
                 ),
-                patch("live_translator.tts.speaker.runtime_manifest_path"),
+                patch("live_translator.tts.speaker.find_runtime_manifest"),
                 patch("live_translator.tts.speaker.load_manifest"),
                 patch("live_translator.tts.speaker.verify_manifest", return_value=verified) as verify,
             ):
@@ -144,6 +144,7 @@ class TtsSpeakerTests(unittest.TestCase):
                 speaker._resolve_piper_assets()
 
             verify.assert_called_once()
+            self.assertEqual(speaker._verified_piper_assets, (str(exe), model))
 
     def test_piper_length_scale_is_passed_at_process_startup(self) -> None:
         speaker = TtsSpeaker(

@@ -188,26 +188,20 @@ def approved_runtime_root_for(path: str | Path) -> Path:
     return max(containing, key=lambda root: len(root.parts))
 
 
-def runtime_manifest_path(runtime_root: str | Path) -> Path:
-    """Locate the immutable manifest beside source or bundled runtime assets."""
-    root = Path(runtime_root).resolve()
-    candidates = (
-        root / "runtime-assets.manifest.json",
-        root / "packaging" / "runtime-assets.manifest.json",
-    )
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    raise FileNotFoundError(
-        "Runtime asset manifest was not found. Searched: "
-        + ", ".join(str(candidate) for candidate in candidates)
-    )
+def find_runtime_manifest(runtime_root: str | Path | None = None) -> Path:
+    """Find the application-owned manifest.
 
-
-def find_runtime_manifest() -> Path:
-    """Find the application-owned manifest, independent of asset storage."""
+    When ``runtime_root`` is provided, only that approved root is searched.
+    Callers verifying assets from a known root must use this form so a manifest
+    belonging to another approved root cannot be selected accidentally.
+    """
     searched: list[str] = []
-    for root in approved_runtime_roots():
+    roots = (
+        (Path(runtime_root).resolve(),)
+        if runtime_root is not None
+        else tuple(root.resolve() for root in approved_runtime_roots())
+    )
+    for root in roots:
         candidates = (
             root / "runtime-assets.manifest.json",
             root / "packaging" / "runtime-assets.manifest.json",

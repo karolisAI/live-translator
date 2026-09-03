@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import os
 from pathlib import Path, PurePosixPath
+
+from live_translator.runtime import _is_within
 
 from live_translator.errors import AssetIntegrityError, UntrustedRuntimePath
 
@@ -139,11 +140,3 @@ def validate_expected_identity(expected_size: int, expected_sha256: str) -> None
         or any(character not in "0123456789abcdef" for character in expected_sha256)
     ):
         raise ValueError("expected_sha256 must be 64 lowercase hexadecimal characters")
-
-
-def _is_within(path: Path, root: Path) -> bool:
-    normalized_path = os.path.normcase(str(path.resolve()))
-    normalized_root = os.path.normcase(str(root.resolve()))
-    return normalized_path == normalized_root or normalized_path.startswith(
-        normalized_root + os.sep
-    )

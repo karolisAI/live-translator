@@ -200,5 +200,26 @@ class ResolveTrustedPathTests(unittest.TestCase):
                     resolve_trusted_path("piper.exe")
 
 
+class RuntimeManifestTests(unittest.TestCase):
+    def test_specific_root_lookup_does_not_fall_back_to_another_root(self) -> None:
+        with TemporaryDirectory() as selected_dir, TemporaryDirectory() as other_dir:
+            selected = Path(selected_dir)
+            other = Path(other_dir)
+            (other / "runtime-assets.manifest.json").write_text("{}", encoding="utf-8")
+
+            with patch("live_translator.runtime.approved_runtime_roots", return_value=[other]):
+                with self.assertRaises(FileNotFoundError):
+                    runtime.find_runtime_manifest(selected)
+
+    def test_specific_root_lookup_finds_source_layout_manifest(self) -> None:
+        with TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            manifest = root / "packaging" / "runtime-assets.manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}", encoding="utf-8")
+
+            self.assertEqual(runtime.find_runtime_manifest(root), manifest.resolve())
+
+
 if __name__ == "__main__":
     unittest.main()

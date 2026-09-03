@@ -16,8 +16,8 @@ from live_translator.config import AudioSettings, TtsSettings
 from live_translator.errors import MissingDependency
 from live_translator.runtime import (
     approved_runtime_root_for,
+    find_runtime_manifest,
     resolve_trusted_path,
-    runtime_manifest_path,
 )
 
 
@@ -431,7 +431,7 @@ class TtsSpeaker:
         runtime_root = approved_runtime_root_for(piper_exe)
         if approved_runtime_root_for(model_path) != runtime_root:
             raise ValueError("Piper executable and voice model must use the same approved runtime root.")
-        manifest = load_manifest(runtime_manifest_path(runtime_root))
+        manifest = load_manifest(find_runtime_manifest(runtime_root))
         verified = verify_manifest(
             manifest,
             runtime_root,
@@ -440,11 +440,15 @@ class TtsSpeaker:
         exe_key = Path(piper_exe).resolve().relative_to(runtime_root).as_posix()
         model_key = model_path.resolve().relative_to(runtime_root).as_posix()
         config_key = config_path.resolve().relative_to(runtime_root).as_posix()
+        verified_by_key = {key.casefold(): path for key, path in verified.items()}
         for key in (exe_key, model_key, config_key):
-            if key not in verified:
+            if key.casefold() not in verified_by_key:
                 raise ValueError(f"Piper asset is not approved by the runtime manifest: '{key}'.")
 
-        self._verified_piper_assets = (str(verified[exe_key]), verified[model_key])
+        self._verified_piper_assets = (
+            str(verified_by_key[exe_key.casefold()]),
+            verified_by_key[model_key.casefold()],
+        )
         return self._verified_piper_assets
 
 
