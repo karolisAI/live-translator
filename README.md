@@ -161,18 +161,15 @@ runnable checkout. Open PowerShell in a local clone first:
 
 ```powershell
 Set-Location C:\path\to\live-translator
-py -3.11 -m venv .venv
 Set-ExecutionPolicy -Scope Process Bypass
-& .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -e .
+uv sync --frozen
 ```
 
 To download Argos models on a clean machine, install the optional package
 manager and direct it to the repository-local build assets:
 
 ```powershell
-python -m pip install -e ".[translate]"
+uv sync --frozen --extra translate
 New-Item -ItemType Directory -Force .\models\argos\packages | Out-Null
 $env:ARGOS_PACKAGES_DIR = (Resolve-Path .\models\argos\packages).Path
 live-translator argos-install --source-language en --target-language de
@@ -439,7 +436,7 @@ make sure its `ISCC.exe` compiler is available on `PATH`, then run from the
 repository root:
 
 ```powershell
-.\scripts\build_windows.ps1 -InstallBuildTools
+.\scripts\build_windows.ps1
 .\scripts\build_inno_installer.ps1
 
 & .\dist\LiveTranslator\LiveTranslator.exe --help

@@ -1,4 +1,6 @@
 .venv/
+.uv-cache/
+.uv-python/
 __pycache__/
 *.pyc
 *.pyo
@@ -29,3 +31,7 @@ record-test*.wav
 working-input-open-test.wav
 app.local*.yaml
 app.working-devices.yaml
+# Generated dependency-security evidence is retained by CI/release artifacts,
+# not as an unreviewed local working-tree file.
+dependency-audit-requirements.txt
+*.cdx.json

@@ -1,16 +1,20 @@
-param(
-    [switch]$InstallBuildTools,
-    [switch]$ValidateOnly
-)
+param([switch]$ValidateOnly)
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
 
-$Python = Join-Path $Root ".venv\Scripts\python.exe"
-if (-not (Test-Path $Python)) {
-    throw "Missing venv Python at $Python. Create the venv and install dependencies first."
+$Uv = Get-Command uv -ErrorAction SilentlyContinue
+if ($null -eq $Uv) {
+    throw "uv is required for a reproducible build. Install the pinned version from pyproject.toml."
 }
+
+& $Uv.Source sync --frozen --extra build --no-default-groups
+if ($LASTEXITCODE -ne 0) {
+    throw "Locked build environment synchronization failed."
+}
+
+$Python = Join-Path $Root ".venv\Scripts\python.exe"
 
 & $Python -m live_translator.validate_assets `
     --root $Root `
@@ -24,13 +28,9 @@ if ($ValidateOnly) {
     return
 }
 
-if ($InstallBuildTools) {
-    & $Python -m pip install -e ".[build]"
-}
-
 & $Python -c "import PyInstaller" 2>$null
 if ($LASTEXITCODE -ne 0) {
-    throw "PyInstaller is not installed. Re-run with: .\scripts\build_windows.ps1 -InstallBuildTools"
+    throw "PyInstaller is missing from the locked build environment."
 }
 
 & $Python -m PyInstaller --clean --noconfirm "packaging\windows\LiveTranslator.spec"
@@ -42,6 +42,7 @@ $DistRoot = Join-Path $Root "dist\LiveTranslator"
 $DistInternal = Join-Path $DistRoot "_internal"
 $DistExe = Join-Path $DistRoot "LiveTranslator.exe"
 $DistManifest = Join-Path $DistInternal "runtime-assets.manifest.json"
+$DistSbom = Join-Path $DistRoot "live-translator.cdx.json"
 
 if (-not (Test-Path -LiteralPath $DistExe -PathType Leaf)) {
     throw "Packaged executable is missing: $DistExe"
@@ -54,6 +55,17 @@ if ($LASTEXITCODE -ne 0) {
     throw "Packaged dist asset validation failed. The build must not be distributed."
 }
 
+& $Uv.Source export --frozen --no-dev --no-emit-project `
+    --format cyclonedx1.5 --output-file $DistSbom
+if ($LASTEXITCODE -ne 0) {
+    throw "Release SBOM generation failed. The build must not be distributed."
+}
+
+& $Python (Join-Path $Root "scripts\validate_sbom.py") $DistSbom
+if ($LASTEXITCODE -ne 0) {
+    throw "Release SBOM validation failed. The build must not be distributed."
+}
+
 & $DistExe --help *> $null
 if ($LASTEXITCODE -ne 0) {
     throw "Packaged executable smoke test failed with exit code $LASTEXITCODE."
@@ -61,4 +73,5 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "Built and verified: $DistExe"
+Write-Host "Dependency SBOM:   $DistSbom"
 Write-Host "Try:                $DistExe setup"
