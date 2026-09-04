@@ -58,7 +58,10 @@ jobs:
             exit 1
           fi
 
-          printf '%s' "$PR_BODY" > pr_body.txt
+          # GitHub delivers PR bodies with CRLF line endings. Normalize to LF
+          # so the multiline anchors below (^, $) match right after headings
+          # instead of stopping short at a stray trailing \r.
+          printf '%s' "$PR_BODY" | tr -d '\r' > pr_body.txt
           fail=0
 
           # The template's instructional HTML comment block is left in place by
