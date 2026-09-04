@@ -76,10 +76,23 @@ jobs:
             fail=1
           fi
 
-          # 3. Required template sections still present.
+          # 3. Required template sections still present, and 4. each one
+          # actually has content (not just the heading left behind after the
+          # "_No response_" line under it was deleted instead of replaced).
           for section in Description Reason Changes Testing; do
             if ! grep -qiE "^#{1,6}[[:space:]]+${section}([[:space:]]|$)" pr_body_visible.txt; then
               echo "::error::PR description is missing the required '## ${section}' section."
+              fail=1
+              continue
+            fi
+
+            content=$(SECTION="$section" perl -0777 -ne '
+              my $s = quotemeta($ENV{SECTION});
+              print $1 if /^\#{1,6}[ \t]*$s[ \t]*$(.*?)(?=^\#{1,6}[ \t]|\z)/ims;
+            ' pr_body_visible.txt)
+
+            if [ -z "$(printf '%s' "$content" | tr -d '[:space:]')" ]; then
+              echo "::error::PR description section '## ${section}' has no content. Add real text, not just the heading."
               fail=1
             fi
           done
