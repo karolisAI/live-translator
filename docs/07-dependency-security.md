@@ -34,8 +34,9 @@ to require `stanza>=1.12.2,<2`, which contains the fix for
 a CI compatibility smoke check and must be rechecked when either dependency
 changes.
 
-The Windows build script always synchronizes the `build` extra from the lock.
-It no longer relies on packages left in a developer's existing environment.
+The Windows build script synchronizes the `build` extra from the lock into a
+dedicated `.build-venv`. It neither relies on packages left in a developer's
+environment nor prunes the developer's selected optional extras.
 
 ## Vulnerability policy
 
@@ -52,8 +53,11 @@ An unavoidable temporary exception belongs in
 - an ISO `YYYY-MM-DD` expiry date.
 
 Expired, duplicate, malformed, or undocumented exceptions fail before the
-scanner runs. Exceptions must be narrowly scoped, reviewed in a pull request,
-and removed as soon as an upstream fix is usable. Example (not an approval):
+scanner runs. Each exception suppresses only the exact normalized package-name
+and vulnerability-ID pair; the same advisory in another package still fails.
+An exception that matches no current finding also fails so stale approvals are
+removed. Exceptions must be reviewed in a pull request and removed as soon as
+an upstream fix is usable. Example (not an approval):
 
 ```json
 {

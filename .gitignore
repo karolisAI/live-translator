@@ -1,4 +1,5 @@
 .venv/
+.build-venv/
 .uv-cache/
 .uv-python/
 __pycache__/
@@ -24,7 +25,7 @@ lt-debug*/
 # directory outside any checkout; these two rules only catch a run that was
 # pointed back inside one. segment-*.txt holds the transcript and the
 # translation in plain text and is the one artifact *.wav above does not cover.
-# Do not widen it to *.txt: that would silently untrack requirements.txt.
+# Do not widen it to *.txt; keep generated transcript ignores narrowly scoped.
 diagnostics/
 segment-*.txt
 record-test*.wav

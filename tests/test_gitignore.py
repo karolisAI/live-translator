@@ -67,15 +67,15 @@ class GitIgnoreTests(unittest.TestCase):
                     f"{path} is not ignored; Git would offer to commit it",
                 )
 
-    def test_requirements_txt_is_still_tracked(self) -> None:
-        """`segment-*.txt` must stay narrow. A blanket `*.txt` would untrack this."""
+    def test_pyproject_toml_is_not_ignored(self) -> None:
+        """A tracked project definition is a canary for accidentally broad ignores."""
         completed = subprocess.run(
-            ["git", "check-ignore", "-q", "requirements.txt"],
+            ["git", "check-ignore", "-q", "pyproject.toml"],
             cwd=REPO_ROOT,
             capture_output=True,
             check=False,
         )
-        self.assertEqual(completed.returncode, 1, "requirements.txt must not be ignored")
+        self.assertEqual(completed.returncode, 1, "pyproject.toml must not be ignored")
 
 
 if __name__ == "__main__":
