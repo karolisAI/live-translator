@@ -29,6 +29,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Validate PR title
+        # Dependabot cannot edit its own PR title or body, and pr-checks is a
+        # required status check, so its PRs must not be gated on the template
+        # convention. The steps are skipped (not the whole job) on purpose: a
+        # job whose steps all skip still reports success, so the required
+        # "pr-checks" check stays green and the PR remains mergeable. Skipping
+        # the job instead would leave the required check unreported and block
+        # the PR forever. Keyed on the PR author, not github.actor, so a human
+        # editing a Dependabot PR does not re-arm the gate.
+        if: github.event.pull_request.user.login != 'dependabot[bot]'
         # Public, GitHub-hosted-runner-only action, pinned to an immutable
         # commit SHA (the commit behind release v1.0.2) rather than a mutable
         # tag. Semantics confirmed against its source: `regex` is tested
@@ -43,8 +52,9 @@ jobs:
 
       - name: Validate PR description
         # Always run, even if the title step failed, so one red check reports
-        # every problem at once instead of one per push.
-        if: always()
+        # every problem at once instead of one per push. Still exempt
+        # Dependabot for the same reason as the title step above.
+        if: always() && github.event.pull_request.user.login != 'dependabot[bot]'
         # The PR body is passed through the environment, never interpolated
         # into the script, so its contents can never be executed as shell.
         env:
