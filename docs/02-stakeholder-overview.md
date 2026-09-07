@@ -111,3 +111,15 @@ The preferred latency roadmap is stabilized incremental recognition and
 clause-level simultaneous translation. Translating isolated words is not a
 product target because English/German word order makes early word translations
 unstable and word-at-a-time speech output would be fragmented.
+
+## Security ownership and response
+
+Vulnerabilities are reported privately through `SECURITY.md`, triaged by the
+security owner and remediated by an assigned technical owner. The project lead
+approves residual risk and security-related release stops. Severity, response
+targets and closure evidence are defined in `08-vulnerability-management.md`.
+
+Suspected runtime tampering, unexpected meeting-mode network access and
+diagnostic-data disclosure activate `09-incident-response.md`. The operational
+process uses networked collaboration only outside meeting operation and does not
+change the local/offline translation path.

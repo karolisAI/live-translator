@@ -484,6 +484,12 @@ Additional references:
 - `docs/04-meeting-test.md`: meeting validation checklist
 - `docs/05-windows-packaging.md`: executable build and installation
 - `docs/06-runtime-asset-integrity.md`: manifest enforcement, evidence and residual risk
+- `docs/07-dependency-security.md`: locked dependencies, audits, SBOM and CI controls
+- `docs/08-vulnerability-management.md`: severity, remediation, ownership and closure
+- `docs/09-incident-response.md`: incident classification and response procedure
+- `docs/10-recurring-security-review.md`: weekly, monthly, release and quarterly checks
+- `docs/11-security-process-validation.md`: tabletop validation evidence
+- `SECURITY.md`: private vulnerability reporting instructions
 
 Benchmark write-ups and their audio live in `research/`, which is not tracked in
 Git.
