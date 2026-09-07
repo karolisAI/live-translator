@@ -1,0 +1,139 @@
+{
+  "phrases": {
+    "one_word": {
+      "buffered (current default)": {
+        "piece_count": 1,
+        "time_to_first_piece_median": 0.1014464000472799,
+        "time_to_last_piece_median": 0.10144820006098598,
+        "total_audio_seconds_median": 0.7224489795918367
+      },
+      "streaming (tts.stream_chunks)": {
+        "piece_count": 1,
+        "time_to_first_piece_median": 0.10315680003259331,
+        "time_to_last_piece_median": 0.10315799992531538,
+        "total_audio_seconds_median": 0.6760090702947846
+      }
+    },
+    "short_sentence": {
+      "buffered (current default)": {
+        "piece_count": 1,
+        "time_to_first_piece_median": 0.3604525999398902,
+        "time_to_last_piece_median": 0.36045429995283484,
+        "total_audio_seconds_median": 2.556825396825397
+      },
+      "streaming (tts.stream_chunks)": {
+        "piece_count": 1,
+        "time_to_first_piece_median": 0.4081959999166429,
+        "time_to_last_piece_median": 0.4081975999288261,
+        "total_audio_seconds_median": 2.5103854875283447
+      }
+    },
+    "medium_sentence": {
+      "buffered (current default)": {
+        "piece_count": 1,
+        "time_to_first_piece_median": 0.4722156999632716,
+        "time_to_last_piece_median": 0.47221659997012466,
+        "total_audio_seconds_median": 3.0328344671201815
+      },
+      "streaming (tts.stream_chunks)": {
+        "piece_count": 1,
+        "time_to_first_piece_median": 0.4849442000268027,
+        "time_to_last_piece_median": 0.4849460000405088,
+        "total_audio_seconds_median": 3.021224489795918
+      }
+    },
+    "two_sentences": {
+      "buffered (current default)": {
+        "piece_count": 1,
+        "time_to_first_piece_median": 0.4255526999477297,
+        "time_to_last_piece_median": 0.42555399995762855,
+        "total_audio_seconds_median": 3.070294784580499
+      },
+      "streaming (tts.stream_chunks)": {
+        "piece_count": 2,
+        "time_to_first_piece_median": 0.18456730002071708,
+        "time_to_last_piece_median": 0.5473259999416769,
+        "total_audio_seconds_median": 3.0586848072562356
+      }
+    },
+    "three_sentences": {
+      "buffered (current default)": {
+        "piece_count": 1,
+        "time_to_first_piece_median": 0.8255057000787929,
+        "time_to_last_piece_median": 0.8255068000871688,
+        "total_audio_seconds_median": 5.87092970521542
+      },
+      "streaming (tts.stream_chunks)": {
+        "piece_count": 3,
+        "time_to_first_piece_median": 0.26768769999034703,
+        "time_to_last_piece_median": 1.0872958999825642,
+        "total_audio_seconds_median": 5.8244897959183675
+      }
+    },
+    "long_phrase": {
+      "buffered (current default)": {
+        "piece_count": 1,
+        "time_to_first_piece_median": 2.0947879999876022,
+        "time_to_last_piece_median": 2.0947898000013083,
+        "total_audio_seconds_median": 14.5578231292517
+      },
+      "streaming (tts.stream_chunks)": {
+        "piece_count": 4,
+        "time_to_first_piece_median": 0.34403930010739714,
+        "time_to_last_piece_median": 2.1004991000518203,
+        "total_audio_seconds_median": 14.383673469387755
+      }
+    }
+  },
+  "conditions": {
+    "buffered (current default)": {
+      "stream_chunks": false,
+      "total_runs": 30,
+      "failed_runs": 0,
+      "error_rate": 0.0,
+      "time_to_first_piece": {
+        "median": 0.4360455999849364,
+        "mean": 0.7189464999944903,
+        "min": 0.1007994000101462,
+        "max": 2.1407512999139726
+      },
+      "time_to_last_piece": {
+        "median": 0.43604669999331236,
+        "mean": 0.7189481233324234,
+        "min": 0.10080150002613664,
+        "max": 2.1407525999238715
+      },
+      "total_audio_seconds": {
+        "median": 3.0328344671201815,
+        "mean": 4.980523053665911,
+        "min": 0.6643990929705216,
+        "max": 14.778412698412698
+      }
+    },
+    "streaming (tts.stream_chunks)": {
+      "stream_chunks": true,
+      "total_runs": 30,
+      "failed_runs": 0,
+      "error_rate": 0.0,
+      "time_to_first_piece": {
+        "median": 0.2956955999834463,
+        "mean": 0.2950913599963921,
+        "min": 0.09421759995166212,
+        "max": 0.5131709999404848
+      },
+      "time_to_last_piece": {
+        "median": 0.5048930499469861,
+        "mean": 0.7887447533236506,
+        "min": 0.09421859995927662,
+        "max": 2.508281899965368
+      },
+      "total_audio_seconds": {
+        "median": 3.039954648526077,
+        "mean": 4.923634164777022,
+        "min": 0.6411791383219955,
+        "max": 14.70875283446712
+      }
+    }
+  },
+  "text_reconstruction_mismatches": 0
+}
