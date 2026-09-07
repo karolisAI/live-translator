@@ -8,6 +8,7 @@ from typing import Any
 from live_translator.asset_manifest import load_manifest, verify_manifest_root
 from live_translator.config import TranslationSettings
 from live_translator.errors import MissingDependency
+from live_translator.mt.argos_packages import APPROVED_ARGOS_PACKAGE_VERSION
 from live_translator.mt.argos_runtime import configure_argos_runtime, validate_override_dir
 from live_translator.runtime import find_runtime_manifest, resolve_trusted_path
 
@@ -137,7 +138,18 @@ def _argos_package_path(source_language: str, target_language: str) -> Path:
         data_root = Path(xdg_env)
     else:
         data_root = Path.home() / ".local" / "share"
-    xdg_candidate = data_root / "argos-translate" / "packages" / package_name
+    # argostranslate's own package.install_from_path() -- what `argos-install`
+    # calls -- names the installed directory "translate-{from}_{to}-{version}"
+    # (version with dots replaced by underscores), not the bare "{from}_{to}"
+    # this app uses for its own bundled layout. Verified against a real
+    # install: `translate-en_de-1_3` on disk for package_name "en_de" and
+    # APPROVED_ARGOS_PACKAGE_VERSION "1.3". The bundled-default candidate
+    # above stays "{from}_{to}" deliberately -- that's this app's own
+    # packaging convention, not argostranslate's.
+    installed_dir_name = (
+        f"translate-{package_name}-{APPROVED_ARGOS_PACKAGE_VERSION.replace('.', '_')}"
+    )
+    xdg_candidate = data_root / "argos-translate" / "packages" / installed_dir_name
     if xdg_candidate.exists():
         return xdg_candidate
     candidates.append(xdg_candidate)

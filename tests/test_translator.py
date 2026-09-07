@@ -149,9 +149,14 @@ class ArgosPackagePathTests(unittest.TestCase):
     def test_falls_through_to_xdg_when_env_override_lacks_the_package(self) -> None:
         """Covers two fall-throughs at once: the missing bundled-default
         candidate, and an ARGOS_PACKAGES_DIR that's set but doesn't contain
-        this language pair -- neither should abort the search early."""
+        this language pair -- neither should abort the search early.
+
+        The XDG candidate directory is named "translate-en_de-1_3", not the
+        bare "en_de" the bundled-default candidate uses -- that's what
+        argostranslate's own package.install_from_path() (what `argos-install`
+        calls) actually names it on disk, verified against a real install."""
         with TemporaryDirectory() as env_dir, TemporaryDirectory() as xdg_dir:
-            xdg_package = Path(xdg_dir) / "argos-translate" / "packages" / "en_de"
+            xdg_package = Path(xdg_dir) / "argos-translate" / "packages" / "translate-en_de-1_3"
             xdg_package.mkdir(parents=True)
 
             with (
@@ -218,7 +223,7 @@ class ArgosPackagePathTests(unittest.TestCase):
         has to actually resolve under XDG (not ARGOS_PACKAGES_DIR) each call,
         otherwise the search returns before ever reaching XDG validation."""
         with TemporaryDirectory() as env_dir, TemporaryDirectory() as xdg_dir:
-            xdg_package = Path(xdg_dir) / "argos-translate" / "packages" / "en_de"
+            xdg_package = Path(xdg_dir) / "argos-translate" / "packages" / "translate-en_de-1_3"
             xdg_package.mkdir(parents=True)
 
             with (
@@ -243,8 +248,8 @@ class ArgosPackagePathTests(unittest.TestCase):
             TemporaryDirectory() as first_xdg,
             TemporaryDirectory() as second_xdg,
         ):
-            Path(first_xdg, "argos-translate", "packages", "en_de").mkdir(parents=True)
-            Path(second_xdg, "argos-translate", "packages", "en_de").mkdir(parents=True)
+            Path(first_xdg, "argos-translate", "packages", "translate-en_de-1_3").mkdir(parents=True)
+            Path(second_xdg, "argos-translate", "packages", "translate-en_de-1_3").mkdir(parents=True)
 
             with (
                 self._no_bundled_default(),
@@ -272,13 +277,24 @@ class ArgosPackagePathTests(unittest.TestCase):
 
     def test_unset_xdg_data_home_uses_the_default_without_validation(self) -> None:
         """The ~/.local/share default is not an operator override -- it must
-        not be validated or require existing, only an explicit value should."""
+        not be validated or require existing, only an explicit value should.
+
+        Patches Path.home() to an empty temp directory rather than relying on
+        the real one having no argos-translate packages installed -- on a dev
+        machine that has actually run `argos-install`, the real home
+        directory does have one, and this test must not depend on that not
+        being the case."""
         env = dict(os.environ)
         env.pop("ARGOS_PACKAGES_DIR", None)
         env.pop("XDG_DATA_HOME", None)
-        with self._no_bundled_default(), patch.dict(os.environ, env, clear=True):
-            with self.assertRaisesRegex(FileNotFoundError, "argos-install"):
-                _argos_package_path("en", "de")  # must fail on "not found", not validation
+        with TemporaryDirectory() as empty_home:
+            with (
+                self._no_bundled_default(),
+                patch.dict(os.environ, env, clear=True),
+                patch("live_translator.mt.translator.Path.home", return_value=Path(empty_home)),
+            ):
+                with self.assertRaisesRegex(FileNotFoundError, "argos-install"):
+                    _argos_package_path("en", "de")  # must fail on "not found", not validation
 
 
 if __name__ == "__main__":
