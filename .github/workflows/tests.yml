@@ -20,14 +20,21 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.9"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
       - name: Create unsigned test launcher
-        run: python -m pip install --no-deps --no-build-isolation .
+        run: uv sync --frozen --no-default-groups
 
       - name: Test Authenticode signing and tamper detection
         shell: pwsh
         run: >-
           .\scripts\test_windows_signing.ps1
-          -UnsignedExecutablePath (Get-Command live-translator.exe).Source
+          -UnsignedExecutablePath .\.venv\Scripts\live-translator.exe
 
   test:
     runs-on: ${{ matrix.os }}
