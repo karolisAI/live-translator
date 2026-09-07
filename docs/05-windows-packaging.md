@@ -116,5 +116,12 @@ the executable in a meeting.
 The script revalidates `dist` immediately before invoking Inno Setup. Use
 `-ValidateOnly` to perform that gate without creating an installer.
 
-The current binary and installer are unsigned and intended for controlled
-internal demonstration. Windows SmartScreen behavior depends on local policy.
+Without `-ApprovedRelease`, the binary and installer are explicitly unsigned
+development artifacts intended for controlled internal demonstration. Windows
+SmartScreen behavior depends on local policy.
+
+The approved workflow is implemented but blocked until an organization signing
+identity is provisioned. In that protected environment, pass `-ApprovedRelease`
+to both build scripts. The executable is signed and verified before Inno Setup
+runs; the installer is then signed and verified before release evidence is
+written. See [12-windows-release-signing.md](12-windows-release-signing.md).

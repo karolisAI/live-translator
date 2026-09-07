@@ -26,6 +26,8 @@ evidence instead of checking off this source template permanently.
 - [ ] All Critical findings are closed; High findings are closed or explicitly accepted.
 - [ ] Full CI, dependency audit, runtime integrity validation and packaged smoke test pass.
 - [ ] Release SBOM, runtime manifest, commit and artifact hashes are retained together.
+- [ ] Executable and installer signatures match the approved publisher and contain trusted timestamps.
+- [ ] Signature-verification reports and `SHA256SUMS.txt` are retained with the matching SBOM.
 - [ ] Offline meeting behavior and normal no-diagnostics retention behavior are verified.
 - [ ] Known residual risks have project-lead approval and a review/expiry date.
 
