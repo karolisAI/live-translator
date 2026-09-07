@@ -98,3 +98,8 @@ For each dependency update:
    the generated SBOM.
 5. Record any accepted vulnerability in the policy with an owner-traceable
    justification and expiry date.
+
+Dependency findings follow the severity, ownership, escalation and closure
+rules in [08-vulnerability-management.md](08-vulnerability-management.md).
+Suspected exploitation or a malicious package activates
+[09-incident-response.md](09-incident-response.md).
