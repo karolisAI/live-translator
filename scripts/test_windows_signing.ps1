@@ -29,10 +29,6 @@ try {
         -Subject "CN=Live Translator Ephemeral Signing Test" `
         -CertStoreLocation "Cert:\CurrentUser\My" `
         -NotAfter (Get-Date).AddHours(1)
-    $publicCertificate = Join-Path $testRoot "ephemeral-test.cer"
-    Export-Certificate -Cert $certificate -FilePath $publicCertificate | Out-Null
-    Import-Certificate -FilePath $publicCertificate -CertStoreLocation "Cert:\CurrentUser\Root" | Out-Null
-
     Invoke-WindowsSign `
         -FilePath $testExe `
         -CertificateThumbprint $certificate.Thumbprint `
@@ -40,6 +36,7 @@ try {
     Assert-WindowsSignature `
         -FilePath $testExe `
         -ExpectedThumbprint $certificate.Thumbprint `
+        -AllowUntrustedDevelopmentCertificate `
         -SignToolPath $SignToolPath
 
     [System.IO.File]::AppendAllText($testExe, "tampered")
@@ -47,6 +44,7 @@ try {
         Assert-WindowsSignature `
             -FilePath $testExe `
             -ExpectedThumbprint $certificate.Thumbprint `
+            -AllowUntrustedDevelopmentCertificate `
             -SignToolPath $SignToolPath
         throw "Tampered executable unexpectedly passed signature verification."
     }
@@ -60,13 +58,9 @@ try {
 }
 finally {
     if ($null -ne $certificate) {
-        foreach ($store in @("My", "Root", "TrustedPublisher")) {
-            & certutil.exe -user -delstore $store $certificate.Thumbprint *> $null
-        }
-        $remaining = foreach ($store in @("My", "Root", "TrustedPublisher")) {
-            Get-ChildItem -LiteralPath "Cert:\CurrentUser\$store" |
-                Where-Object Thumbprint -eq $certificate.Thumbprint
-        }
+        & certutil.exe -user -delstore My $certificate.Thumbprint *> $null
+        $remaining = Get-ChildItem -LiteralPath "Cert:\CurrentUser\My" |
+            Where-Object Thumbprint -eq $certificate.Thumbprint
         if ($remaining) {
             throw "Ephemeral signing certificate cleanup failed."
         }

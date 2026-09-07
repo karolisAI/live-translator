@@ -45,6 +45,7 @@ class WindowsReleaseSigningContractTests(unittest.TestCase):
                 self.assertIn("Invoke-WindowsSign", script)
                 self.assertIn("Assert-WindowsSignature", script)
                 self.assertIn("RequireTimestamp", script)
+                self.assertNotIn("AllowUntrustedDevelopmentCertificate", script)
 
     def test_release_evidence_includes_hashes_signatures_and_sbom(self):
         installer_build = self._read("scripts/build_inno_installer.ps1")

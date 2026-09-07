@@ -118,11 +118,13 @@ On Windows, run:
 ```
 
 The test creates an ephemeral self-signed certificate in the current user's
-store, temporarily trusts it, signs a disposable copy of an unsigned launcher,
-accepts the valid signature, modifies the signed copy and confirms verification
-fails. Its `finally` block removes the certificate from the user stores and
+personal store, signs a disposable copy of an unsigned launcher, confirms that
+the embedded signature belongs to that certificate, modifies the signed copy
+and confirms verification fails. It does not add the development certificate
+to the trusted-root store. Its `finally` block removes the certificate and
 deletes the temporary files. GitHub Actions runs the same test on a disposable
-Windows runner.
+Windows runner. The approved build scripts never enable the development-only
+untrusted-certificate mode: they still require Windows trust and a timestamp.
 
 This proves the signing and tamper-detection mechanics. It does not prove a
 production publisher identity, public certificate trust, timestamp service,

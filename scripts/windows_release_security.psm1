@@ -81,25 +81,32 @@ function Assert-WindowsSignature {
         [Parameter(Mandatory = $true)][string]$FilePath,
         [Parameter(Mandatory = $true)][string]$ExpectedThumbprint,
         [switch]$RequireTimestamp,
+        [switch]$AllowUntrustedDevelopmentCertificate,
         [string]$EvidencePath,
         [string]$SignToolPath
     )
 
     $resolvedFile = (Resolve-Path -LiteralPath $FilePath -ErrorAction Stop).Path
     $resolvedSignTool = Resolve-SignTool -SignToolPath $SignToolPath
-    $output = & $resolvedSignTool verify /pa /all /v $resolvedFile 2>&1
-    $exitCode = $LASTEXITCODE
-    if ($EvidencePath) {
-        $evidenceParent = Split-Path -Parent $EvidencePath
-        New-Item -ItemType Directory -Path $evidenceParent -Force | Out-Null
-        $output | Out-File -LiteralPath $EvidencePath -Encoding utf8
-    }
-    if ($exitCode -ne 0) {
-        throw "Authenticode verification failed for $resolvedFile."
+    if (-not $AllowUntrustedDevelopmentCertificate) {
+        $output = & $resolvedSignTool verify /pa /all /v $resolvedFile 2>&1
+        $exitCode = $LASTEXITCODE
+        if ($EvidencePath) {
+            $evidenceParent = Split-Path -Parent $EvidencePath
+            New-Item -ItemType Directory -Path $evidenceParent -Force | Out-Null
+            $output | Out-File -LiteralPath $EvidencePath -Encoding utf8
+        }
+        if ($exitCode -ne 0) {
+            throw "Authenticode verification failed for $resolvedFile."
+        }
     }
 
     $signature = Get-AuthenticodeSignature -LiteralPath $resolvedFile
-    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+    $acceptedStatus = @([System.Management.Automation.SignatureStatus]::Valid)
+    if ($AllowUntrustedDevelopmentCertificate) {
+        $acceptedStatus += [System.Management.Automation.SignatureStatus]::UnknownError
+    }
+    if ($signature.Status -notin $acceptedStatus) {
         throw "Windows does not trust the Authenticode signature on $resolvedFile (status: $($signature.Status))."
     }
     $actualThumbprint = $signature.SignerCertificate.Thumbprint.Replace(" ", "").ToUpperInvariant()
@@ -109,6 +116,9 @@ function Assert-WindowsSignature {
     }
     if ($RequireTimestamp -and $null -eq $signature.TimeStamperCertificate) {
         throw "The signature on $resolvedFile has no trusted timestamp."
+    }
+    if ($RequireTimestamp -and $AllowUntrustedDevelopmentCertificate) {
+        throw "An approved timestamp cannot be verified in development-certificate mode."
     }
 }
 
