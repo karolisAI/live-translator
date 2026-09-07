@@ -21,11 +21,11 @@ class RealtimeMeetingWorkersTests(unittest.TestCase):
         processed: list[int] = []
         spoken: list[str] = []
 
-        def process(segment: CapturedSegment) -> str:
+        def process(segment: CapturedSegment) -> list[str]:
             recognition_started.set()
             release_recognition.wait(timeout=2.0)
             processed.append(segment.number)
-            return f"translation-{segment.number}"
+            return [f"translation-{segment.number}"]
 
         workers = RealtimeMeetingWorkers(process, spoken.append, segment_queue_size=4)
         workers.start()
@@ -48,11 +48,11 @@ class RealtimeMeetingWorkersTests(unittest.TestCase):
         processed: list[int] = []
         warnings: list[str] = []
 
-        def process(segment: CapturedSegment) -> None:
+        def process(segment: CapturedSegment) -> list[str]:
             recognition_started.set()
             release_recognition.wait(timeout=2.0)
             processed.append(segment.number)
-            return None
+            return []
 
         workers = RealtimeMeetingWorkers(
             process,
@@ -82,9 +82,9 @@ class RealtimeMeetingWorkersTests(unittest.TestCase):
         processed: list[int] = []
         spoken: list[str] = []
 
-        def process(segment: CapturedSegment) -> str:
+        def process(segment: CapturedSegment) -> list[str]:
             processed.append(segment.number)
-            return f"translation-{segment.number}"
+            return [f"translation-{segment.number}"]
 
         def speak(text: str) -> None:
             playback_started.set()
@@ -113,9 +113,9 @@ class RealtimeMeetingWorkersTests(unittest.TestCase):
         spoken: list[str] = []
         warnings: list[str] = []
 
-        def process(segment: CapturedSegment) -> str:
+        def process(segment: CapturedSegment) -> list[str]:
             processed.append(segment.number)
-            return f"translation-{segment.number}"
+            return [f"translation-{segment.number}"]
 
         def speak(text: str) -> None:
             if text == "translation-1":
@@ -146,7 +146,7 @@ class RealtimeMeetingWorkersTests(unittest.TestCase):
         self.assertIn("oldest queued translation skipped", warnings[0])
 
     def test_worker_failure_stops_capture_and_is_propagated(self) -> None:
-        def process(_segment: CapturedSegment) -> str:
+        def process(_segment: CapturedSegment) -> list[str]:
             raise ValueError("model failed")
 
         workers = RealtimeMeetingWorkers(process, lambda _text: None)
@@ -163,8 +163,8 @@ class RealtimeMeetingWorkersTests(unittest.TestCase):
         spoken: list[str] = []
         warnings: list[str] = []
 
-        def process(segment: CapturedSegment) -> str:
-            return f"translation-{segment.number}"
+        def process(segment: CapturedSegment) -> list[str]:
+            return [f"translation-{segment.number}"]
 
         def speak(text: str) -> None:
             if text == "translation-1":

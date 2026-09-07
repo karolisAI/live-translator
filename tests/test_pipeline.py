@@ -26,6 +26,10 @@ class FakeSpeaker:
             raise self.render_exception
         return RenderedSpeech(text, samples=[0.0], sample_rate=16000)
 
+    def render_many(self, text: str) -> list[RenderedSpeech]:
+        rendered = self.render(text)
+        return [rendered] if rendered is not None else []
+
     def play(self, rendered: RenderedSpeech | None) -> None:
         self.played.append(rendered)
 
@@ -73,8 +77,9 @@ class PipelineTests(unittest.TestCase):
                 )
 
         self.assertEqual(speaker.rendered, ["target: source"])
-        self.assertIsInstance(result, RenderedSpeech)
-        self.assertEqual(result.text, "target: source")
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], RenderedSpeech)
+        self.assertEqual(result[0].text, "target: source")
         self.assertEqual(speaker.played, [])  # playback is the other worker's job
 
     def test_skipped_segment_renders_nothing(self) -> None:
@@ -89,7 +94,7 @@ class PipelineTests(unittest.TestCase):
         with patch.object(pipeline, "_transcribe_audio_if_safe", return_value=None):
             result = pipeline._process_live_segment(FakeSegment(), object(), speaker, None)
 
-        self.assertIsNone(result)
+        self.assertEqual(result, [])
         self.assertEqual(speaker.rendered, [])
 
     def test_low_confidence_segment_is_still_rendered(self) -> None:
@@ -123,7 +128,8 @@ class PipelineTests(unittest.TestCase):
                 FakeSegment(), FakeTranslator(), speaker, None
             )
 
-        self.assertIsInstance(result, RenderedSpeech)
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], RenderedSpeech)
         self.assertEqual(speaker.rendered, ["target: unsicher"])
 
     def test_untrusted_executable_disables_further_synthesis_for_the_session(self) -> None:
@@ -156,8 +162,8 @@ class PipelineTests(unittest.TestCase):
             first = pipeline._process_live_segment(FakeSegment(), FakeTranslator(), speaker, None)
             second = pipeline._process_live_segment(FakeSegment(), FakeTranslator(), speaker, None)
 
-        self.assertIsNone(first)
-        self.assertIsNone(second)
+        self.assertEqual(first, [])
+        self.assertEqual(second, [])
         # render() was attempted once (that's how the untrusted path was
         # discovered) but never retried on the second phrase, since a
         # mistrusted path resolves the same way again.
@@ -190,8 +196,9 @@ class PipelineTests(unittest.TestCase):
             speaker.render_exception = None
             second = pipeline._process_live_segment(FakeSegment(), FakeTranslator(), speaker, None)
 
-        self.assertIsNone(first)
-        self.assertIsInstance(second, RenderedSpeech)
+        self.assertEqual(first, [])
+        self.assertEqual(len(second), 1)
+        self.assertIsInstance(second[0], RenderedSpeech)
         self.assertEqual(len(speaker.rendered), 2)
 
 

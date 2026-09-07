@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 from collections import deque
@@ -186,6 +187,36 @@ class _PersistentPiper:
         except OSError:
             pass
         self._finish_process(graceful_timeout=5)
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_MIN_CHUNK_CHARS = 12
+
+
+def split_into_speech_chunks(text: str) -> list[str]:
+    """Split `text` into sentence-sized pieces for incremental TTS playback.
+
+    Splitting on sentence-ending punctuation lets playback of an early piece
+    start while later pieces are still being synthesized, instead of playing
+    nothing until the whole phrase is rendered. A trailing fragment shorter
+    than _MIN_CHUNK_CHARS is merged into the previous piece rather than sent
+    to Piper on its own -- otherwise a short tail like "yes." or "ok." pays a
+    full request's fixed IPC overhead for a fragment too short for the
+    overlap to pay off.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return []
+    parts = [part.strip() for part in _SENTENCE_SPLIT_RE.split(stripped) if part.strip()]
+    if len(parts) <= 1:
+        return [stripped]
+    merged: list[str] = []
+    for part in parts:
+        if merged and len(part) < _MIN_CHUNK_CHARS:
+            merged[-1] = f"{merged[-1]} {part}"
+        else:
+            merged.append(part)
+    return merged
 
 
 @dataclass(frozen=True)
@@ -381,6 +412,40 @@ class TtsSpeaker:
         finally:
             wav_path.unlink(missing_ok=True)
         return RenderedSpeech(text, samples, sample_rate)
+
+    def render_many(self, text: str) -> list[RenderedSpeech]:
+        """Render `text` as one or more pieces to play back-to-back.
+
+        With `tts.stream_chunks` off (default), or for any engine other than
+        Piper, this is exactly `render()` wrapped in a single-item list --
+        no behavior change. With it on for Piper, `text` is split into
+        sentence-sized pieces (see `split_into_speech_chunks`) and each is
+        rendered as its own request to the resident process. The caller
+        (RealtimeMeetingWorkers) enqueues each piece for playback as soon as
+        it's rendered, so the first piece can start playing while later
+        pieces are still being synthesized, instead of the whole phrase
+        waiting on the last piece to finish.
+        """
+        if not text:
+            return []
+        engine = self._tts_settings.engine.lower()
+        if engine in {"none", "off"}:
+            return []
+        if engine not in {"piper", "piper-cli"} or not self._tts_settings.stream_chunks:
+            rendered = self.render(text)
+            return [rendered] if rendered is not None else []
+
+        chunks = split_into_speech_chunks(text)
+        if len(chunks) <= 1:
+            rendered = self.render(text)
+            return [rendered] if rendered is not None else []
+
+        results: list[RenderedSpeech] = []
+        for chunk in chunks:
+            rendered = self.render(chunk)
+            if rendered is not None:
+                results.append(rendered)
+        return results
 
     def play(self, rendered: RenderedSpeech | None) -> None:
         """Play what `render()` produced."""

@@ -270,7 +270,7 @@ class LocalTranslatorPipeline:
         translator: TranslationEngine,
         speaker: TtsSpeaker,
         debug_dir: Path | None,
-    ) -> RenderedSpeech | None:
+    ) -> list[RenderedSpeech]:
         """Recognize, translate, and synthesize one phrase.
 
         Synthesis happens here rather than in the playback worker so that the two
@@ -287,7 +287,7 @@ class LocalTranslatorPipeline:
             self._write_debug_note(debug_wav, "skipped", "")
             if self._verbose:
                 print(f"Segment {segment.number}: skipped in {perf_counter() - started:.2f}s")
-            return None
+            return []
 
         translated = translator.translate(transcript.text)
         self._write_debug_note(debug_wav, transcript.text, translated)
@@ -301,7 +301,7 @@ class LocalTranslatorPipeline:
         # cleanly enough (r=-0.52 on English) to silence one without also
         # silencing the other. Missing audio for a mostly-correct phrase is
         # its own cost, not a free safety win.
-        rendered = self._render_speech(speaker, translated, segment.number) if translated else None
+        rendered = self._render_speech(speaker, translated, segment.number) if translated else []
         if self._verbose:
             queue_seconds = max(0.0, started - segment.captured_at)
             print(
@@ -316,23 +316,27 @@ class LocalTranslatorPipeline:
 
     def _render_speech(
         self, speaker: TtsSpeaker, text: str, segment_number: int
-    ) -> RenderedSpeech | None:
-        """Render text to audio, or None if that fails or is disabled for the session.
+    ) -> list[RenderedSpeech]:
+        """Render text to one or more playable pieces, or [] if that fails or
+        is disabled for the session.
 
-        This runs on the recognition worker (see _process_live_segment's
-        docstring), so an uncaught exception here would otherwise be fatal to
-        the whole meeting via _recognition_loop's outer catch -- the wrong
-        blast radius for a synthesis-only failure. UntrustedRuntimePath
-        permanently disables further attempts, since a mistrusted path
-        resolves the same way again and retrying would only repeat the same
-        failure; anything else (a timeout, a corrupted binary) just skips
-        this one phrase and keeps trying on the next, since those can be
-        transient.
+        Returns a list (see TtsSpeaker.render_many) rather than one clip so
+        that, with tts.stream_chunks on, the caller can enqueue each piece
+        for playback as soon as it's rendered instead of waiting for the
+        whole phrase. This runs on the recognition worker (see
+        _process_live_segment's docstring), so an uncaught exception here
+        would otherwise be fatal to the whole meeting via _recognition_loop's
+        outer catch -- the wrong blast radius for a synthesis-only failure.
+        UntrustedRuntimePath permanently disables further attempts, since a
+        mistrusted path resolves the same way again and retrying would only
+        repeat the same failure; anything else (a timeout, a corrupted
+        binary) just skips this one phrase and keeps trying on the next,
+        since those can be transient.
         """
         if self._tts_disabled_reason is not None:
-            return None
+            return []
         try:
-            return speaker.render(text)
+            return speaker.render_many(text)
         except UntrustedRuntimePath as exc:
             self._tts_disabled_reason = str(exc)
             print(
@@ -341,13 +345,13 @@ class LocalTranslatorPipeline:
                 f"playback is disabled for the rest of this meeting; "
                 f"transcription and translation continue normally."
             )
-            return None
+            return []
         except Exception as exc:
             print(
                 f"Warning: speech synthesis failed for phrase {segment_number}: "
                 f"{exc}. Continuing without spoken output for this phrase."
             )
-            return None
+            return []
 
     def _create_realtime_workers(
         self,

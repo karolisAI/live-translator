@@ -61,6 +61,11 @@ class TtsSettings:
     ~3.6s worst-case cold-cache first synthesis measured in warm_up()'s
     docstring -- long enough not to false-trigger, short enough to still
     fail a stuck meeting phrase rather than hang it indefinitely."""
+    stream_chunks: bool = False
+    """When True (Piper only), split a translated phrase into sentence-sized
+    chunks and render/play them incrementally instead of waiting for the
+    whole phrase to synthesize before any audio plays. Default off so
+    existing behavior is unchanged until explicitly enabled."""
 
 
 @dataclass(frozen=True)
@@ -145,6 +150,7 @@ _SECTION_KEYS: dict[str, set[str]] = {
         "speaker",
         "length_scale",
         "piper_timeout_seconds",
+        "stream_chunks",
     },
     "chunking": {
         "mode",
@@ -458,6 +464,7 @@ def _load_tts(raw: dict[str, Any]) -> TtsSettings:
         speaker=_str_or_none(raw, "speaker"),
         length_scale=_float_or_none(raw, "length_scale"),
         piper_timeout_seconds=_float(raw, "piper_timeout_seconds", 30.0),
+        stream_chunks=_bool(raw, "stream_chunks", False),
     )
 
 

@@ -28,8 +28,8 @@ class RealtimeMeetingWorkers:
 
     def __init__(
         self,
-        process_segment: Callable[[CapturedSegment], str | None],
-        speak: Callable[[str], None],
+        process_segment: Callable[[CapturedSegment], list[Any]],
+        speak: Callable[[Any], None],
         *,
         segment_queue_size: int = 8,
         playback_queue_size: int = 8,
@@ -111,9 +111,14 @@ class RealtimeMeetingWorkers:
                 try:
                     if item is _STOP:
                         return
-                    translated = self._process_segment(item)
-                    if translated:
-                        dropped = self._offer_latest(self._playback, (item.number, translated))
+                    # A segment can render to more than one playback piece
+                    # (see TtsSpeaker.render_many / tts.stream_chunks): each
+                    # piece is queued for playback as soon as it exists,
+                    # rather than waiting for the whole phrase to render, so
+                    # the playback thread can start on piece one while this
+                    # loop is still rendering piece two.
+                    for piece in self._process_segment(item):
+                        dropped = self._offer_latest(self._playback, (item.number, piece))
                         if dropped:
                             self._on_warning(
                                 "         playback fell behind, oldest queued translation skipped"

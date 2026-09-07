@@ -12,7 +12,7 @@ import numpy as np
 
 from live_translator.config import AudioSettings, TtsSettings
 from live_translator.errors import AssetIntegrityError, UntrustedRuntimePath
-from live_translator.tts.speaker import TtsSpeaker, resolve_piper_exe
+from live_translator.tts.speaker import TtsSpeaker, resolve_piper_exe, split_into_speech_chunks
 
 
 class _BlockingIter:
@@ -598,6 +598,104 @@ class TtsSpeakerTests(unittest.TestCase):
             patch("live_translator.tts.speaker.subprocess.Popen", return_value=fake),
         ):
             speaker.warm_up()  # must not raise
+
+
+class SplitIntoSpeechChunksTests(unittest.TestCase):
+    def test_empty_text_splits_to_nothing(self) -> None:
+        self.assertEqual(split_into_speech_chunks(""), [])
+        self.assertEqual(split_into_speech_chunks("   "), [])
+
+    def test_single_sentence_is_not_split(self) -> None:
+        self.assertEqual(split_into_speech_chunks("Hello there"), ["Hello there"])
+
+    def test_splits_on_sentence_boundaries(self) -> None:
+        self.assertEqual(
+            split_into_speech_chunks(
+                "First sentence here. Second sentence here! Third sentence here?"
+            ),
+            ["First sentence here.", "Second sentence here!", "Third sentence here?"],
+        )
+
+    def test_short_trailing_fragment_is_merged_into_the_previous_chunk(self) -> None:
+        """A fragment like "Ok." on its own would pay a full Piper request's
+        fixed IPC overhead for a piece too short for the overlap to pay off."""
+        chunks = split_into_speech_chunks("This is the main point. Ok.")
+        self.assertEqual(chunks, ["This is the main point. Ok."])
+
+    def test_short_leading_fragment_still_starts_its_own_chunk(self) -> None:
+        """Only a fragment with an existing previous chunk gets merged --
+        the first chunk always stands on its own so there is always at
+        least one piece to render."""
+        chunks = split_into_speech_chunks("Ok. This is the rest of a longer sentence.")
+        self.assertEqual(chunks, ["Ok.", "This is the rest of a longer sentence."])
+
+
+class RenderManyTests(unittest.TestCase):
+    def test_default_behaves_exactly_like_a_single_render(self) -> None:
+        """tts.stream_chunks defaults to False -- render_many must not change
+        existing behavior until it's explicitly turned on."""
+        speaker = TtsSpeaker(
+            TtsSettings(engine="piper", model_path="voice.onnx"),
+            AudioSettings(),
+        )
+        fake = _FakeProcess(echo=True)
+
+        with (
+            patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
+            patch("live_translator.tts.speaker.subprocess.Popen", return_value=fake) as popen,
+            patch("live_translator.tts.speaker.read_wav_mono", return_value=READ_WAV_STUB),
+        ):
+            results = speaker.render_many("First sentence. Second sentence.")
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].text, "First sentence. Second sentence.")
+        self.assertEqual(popen.call_count, 1)
+
+    def test_stream_chunks_renders_each_sentence_as_its_own_piece(self) -> None:
+        speaker = TtsSpeaker(
+            TtsSettings(engine="piper", model_path="voice.onnx", stream_chunks=True),
+            AudioSettings(),
+        )
+        fake = _FakeProcess(echo=True)
+
+        with (
+            patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
+            patch("live_translator.tts.speaker.subprocess.Popen", return_value=fake),
+            patch("live_translator.tts.speaker.read_wav_mono", return_value=READ_WAV_STUB),
+        ):
+            results = speaker.render_many("First sentence. Second sentence.")
+
+        self.assertEqual([r.text for r in results], ["First sentence.", "Second sentence."])
+
+    def test_stream_chunks_on_a_single_sentence_still_renders_once(self) -> None:
+        speaker = TtsSpeaker(
+            TtsSettings(engine="piper", model_path="voice.onnx", stream_chunks=True),
+            AudioSettings(),
+        )
+        fake = _FakeProcess(echo=True)
+
+        with (
+            patch.object(speaker, "_resolve_piper_assets", return_value=("piper.exe", Path("voice.onnx"))),
+            patch("live_translator.tts.speaker.subprocess.Popen", return_value=fake) as popen,
+            patch("live_translator.tts.speaker.read_wav_mono", return_value=READ_WAV_STUB),
+        ):
+            results = speaker.render_many("Just one sentence.")
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(popen.call_count, 1)
+
+    def test_stream_chunks_ignored_for_non_piper_engines(self) -> None:
+        speaker = TtsSpeaker(TtsSettings(engine="none", stream_chunks=True), AudioSettings())
+
+        self.assertEqual(speaker.render_many("First sentence. Second sentence."), [])
+
+    def test_empty_text_renders_nothing(self) -> None:
+        speaker = TtsSpeaker(
+            TtsSettings(engine="piper", model_path="voice.onnx", stream_chunks=True),
+            AudioSettings(),
+        )
+
+        self.assertEqual(speaker.render_many(""), [])
 
 
 class ResolvePiperExeTests(unittest.TestCase):
