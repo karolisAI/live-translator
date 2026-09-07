@@ -13,6 +13,17 @@ class SecurityProcessDocumentationTests(unittest.TestCase):
     def _normalized(self, relative: str) -> str:
         return " ".join(self._read(relative).split())
 
+    def _table_rows(self, relative: str) -> list[list[str]]:
+        rows = []
+        for line in self._read(relative).splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("|") or not stripped.endswith("|"):
+                continue
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            if cells and not all(re.fullmatch(r":?-+:?", cell) for cell in cells):
+                rows.append(cells)
+        return rows
+
     def test_all_security_process_deliverables_exist(self):
         required = [
             "SECURITY.md",
@@ -36,19 +47,23 @@ class SecurityProcessDocumentationTests(unittest.TestCase):
         self.assertIn("no vulnerability details", policy)
 
     def test_every_vulnerability_severity_has_targets_and_escalation(self):
-        procedure = self._read("docs/08-vulnerability-management.md")
-        matrix = re.search(
-            r"\| Severity \| Project criteria \|.*?(?=\n\n)", procedure, re.DOTALL
-        )
-        self.assertIsNotNone(matrix)
+        rows = self._table_rows("docs/08-vulnerability-management.md")
+        severity_rows = {
+            row[0].casefold(): row
+            for row in rows
+            if row and row[0].casefold() in {"critical", "high", "medium", "low"}
+        }
         for severity in ("Critical", "High", "Medium", "Low"):
             with self.subTest(severity=severity):
-                row = next(
-                    line for line in matrix.group(0).splitlines()
-                    if line.startswith(f"| {severity} |")
+                row = severity_rows.get(severity.casefold())
+                self.assertIsNotNone(
+                    row,
+                    f"Missing {severity} row in the vulnerability severity table",
                 )
-                self.assertGreaterEqual(row.count("|"), 7)
-                self.assertRegex(row, r"\b(hour|day|days|release)\b")
+                self.assertGreaterEqual(
+                    len(row), 6, f"{severity} row does not define every required field"
+                )
+                self.assertRegex(" ".join(row[2:]).casefold(), r"\b(hour|day|days|release)\b")
 
     def test_roles_and_residual_risk_approver_are_explicit(self):
         procedure = self._read("docs/08-vulnerability-management.md")
@@ -76,22 +91,43 @@ class SecurityProcessDocumentationTests(unittest.TestCase):
             self.assertIn(cadence, checklist)
 
     def test_tabletop_validation_covers_required_scenarios(self):
-        validation = self._read("docs/11-security-process-validation.md")
-        for scenario in ("dependency advisory", "Modified runtime asset", "Diagnostic disclosure"):
-            self.assertIn(scenario, validation)
-        self.assertGreaterEqual(validation.count("| Pass"), 3)
+        rows = self._table_rows("docs/11-security-process-validation.md")
+        scenario_rows = {
+            row[0].casefold(): row
+            for row in rows
+            if len(row) >= 3 and row[0].casefold() != "scenario"
+        }
+        for scenario in (
+            "New dependency advisory",
+            "Modified runtime asset",
+            "Diagnostic disclosure",
+        ):
+            with self.subTest(scenario=scenario):
+                row = scenario_rows.get(scenario.casefold())
+                self.assertIsNotNone(row, f"Missing validation scenario: {scenario}")
+                self.assertRegex(
+                    row[-1].casefold(),
+                    r"^pass\b",
+                    f"Validation scenario is not recorded as passing: {scenario}",
+                )
 
     def test_process_preserves_offline_meeting_operation(self):
-        combined = " ".join(
-            self._normalized(path)
-            for path in (
-                "docs/08-vulnerability-management.md",
-                "docs/09-incident-response.md",
-                "docs/11-security-process-validation.md",
-            )
-        )
-        self.assertIn("no response step may add network access to meeting mode", combined)
-        self.assertIn("procedures adds network access to meeting mode", combined)
+        for path in (
+            "docs/08-vulnerability-management.md",
+            "docs/09-incident-response.md",
+            "docs/11-security-process-validation.md",
+        ):
+            with self.subTest(path=path):
+                procedure = self._normalized(path).casefold()
+                self.assertIn("meeting", procedure)
+                self.assertRegex(
+                    procedure,
+                    r"(?:\b(?:no|not|none|without)\b[^.]{0,120}"
+                    r"\b(?:network|telemetry|cloud)\b|"
+                    r"\b(?:network|telemetry|cloud)\b[^.]{0,120}"
+                    r"\b(?:not|outside)\b)",
+                    f"{path} does not clearly prohibit meeting-mode network use",
+                )
 
 
 if __name__ == "__main__":
