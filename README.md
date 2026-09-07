@@ -161,22 +161,19 @@ runnable checkout. Open PowerShell in a local clone first:
 
 ```powershell
 Set-Location C:\path\to\live-translator
-py -3.11 -m venv .venv
 Set-ExecutionPolicy -Scope Process Bypass
-& .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -e .
+uv sync --frozen
 ```
 
 To download Argos models on a clean machine, install the optional package
 manager and direct it to the repository-local build assets:
 
 ```powershell
-python -m pip install -e ".[translate]"
+uv sync --frozen --extra translate
 New-Item -ItemType Directory -Force .\models\argos\packages | Out-Null
 $env:ARGOS_PACKAGES_DIR = (Resolve-Path .\models\argos\packages).Path
-live-translator argos-install --source-language en --target-language de
-live-translator argos-install --source-language de --target-language en
+uv run --frozen live-translator argos-install --source-language en --target-language de
+uv run --frozen live-translator argos-install --source-language de --target-language en
 ```
 
 `argos-install` selects the manifest-approved package version `1.3`; it refuses
@@ -240,7 +237,7 @@ Meeting mode never downloads. The model is fetched once, by an explicit
 command, and every later run reads it off disk:
 
 ```powershell
-live-translator prepare-models --profile en-de
+uv run --frozen live-translator prepare-models --profile en-de
 ```
 
 Both directions share one model, so this is run once per machine rather than
@@ -293,15 +290,15 @@ place it meets this project's configuration.
 List devices and note the Windows host API. WASAPI endpoints are recommended:
 
 ```powershell
-live-translator list-input-devices
-live-translator list-output-devices
+uv run --frozen live-translator list-input-devices
+uv run --frozen live-translator list-output-devices
 ```
 
 Create one profile per direction:
 
 ```powershell
-live-translator setup --profile en-de --direction en-de
-live-translator setup --profile de-en --direction de-en
+uv run --frozen live-translator setup --profile en-de --direction en-de
+uv run --frozen live-translator setup --profile de-en --direction de-en
 ```
 
 Generated profiles use `auto` for all three audio roles. At runtime the
@@ -330,13 +327,13 @@ Run before a demonstration or meeting:
 $ENDE = "$env:LOCALAPPDATA\LiveTranslator\profiles\en-de.yaml"
 $DEEN = "$env:LOCALAPPDATA\LiveTranslator\profiles\de-en.yaml"
 
-live-translator doctor --config $ENDE --prepare-models
-live-translator doctor --config $DEEN --prepare-models
-live-translator route-test --profile en-de
-live-translator route-test --profile de-en
-live-translator translate-text --source-language en --target-language de --text "Good morning"
-live-translator translate-text --source-language de --target-language en --text "Guten Morgen"
-live-translator transcribe-once --config $ENDE --seconds 5
+uv run --frozen live-translator doctor --config $ENDE --prepare-models
+uv run --frozen live-translator doctor --config $DEEN --prepare-models
+uv run --frozen live-translator route-test --profile en-de
+uv run --frozen live-translator route-test --profile de-en
+uv run --frozen live-translator translate-text --source-language en --target-language de --text "Good morning"
+uv run --frozen live-translator translate-text --source-language de --target-language en --text "Guten Morgen"
+uv run --frozen live-translator transcribe-once --config $ENDE --seconds 5
 ```
 
 `route-test` sends an 880 Hz reference tone through the virtual cable and checks
@@ -353,8 +350,8 @@ In the meeting application select:
 Start a direction:
 
 ```powershell
-live-translator meeting --profile en-de
-live-translator meeting --profile de-en
+uv run --frozen live-translator meeting --profile en-de
+uv run --frozen live-translator meeting --profile de-en
 ```
 
 In the default VAD meeting mode, capture remains active for the full session and
@@ -370,7 +367,7 @@ else, writing nothing to disk. Diagnostic mode adds audio gates, queue delay,
 timing, and saved input chunks on top of the same text:
 
 ```powershell
-live-translator meeting --profile en-de --verbose --debug-audio-dir debug-asr
+uv run --frozen live-translator meeting --profile en-de --verbose --debug-audio-dir debug-asr
 ```
 
 ## Diagnostics
@@ -379,7 +376,7 @@ Diagnostic capture is off unless explicitly enabled, with `--diagnostics` or
 `diagnostics.enabled: true` in a profile:
 
 ```powershell
-live-translator meeting --profile en-de --diagnostics
+uv run --frozen live-translator meeting --profile en-de --diagnostics
 ```
 
 Enabling it prints a warning naming what is captured. Each phrase writes a WAV
@@ -392,7 +389,7 @@ Captures expire after 7 days or 500 MB, oldest first, both configurable under
 `diagnostics:` in the profile. Remove everything on demand:
 
 ```powershell
-live-translator purge-diagnostics --profile en-de
+uv run --frozen live-translator purge-diagnostics --profile en-de
 ```
 
 ## When Something Does Not Work
@@ -400,7 +397,7 @@ live-translator purge-diagnostics --profile en-de
 Check dependencies without touching a profile:
 
 ```powershell
-live-translator doctor
+uv run --frozen live-translator doctor
 ```
 
 Add `--profile <name>` (or `--config <path>`) to also validate that profile's
@@ -412,14 +409,14 @@ If a device fails to open, try each one and see which ones actually work. The
 output probe plays silence, so it is safe to run during a call:
 
 ```powershell
-live-translator probe-input-devices
-live-translator probe-output-devices
+uv run --frozen live-translator probe-input-devices
+uv run --frozen live-translator probe-output-devices
 ```
 
 Confirm the microphone is being captured at all, then listen back:
 
 ```powershell
-live-translator record-test --seconds 5 --play
+uv run --frozen live-translator record-test --seconds 5 --play
 ```
 
 Test the two ends separately. `say` exercises Piper and playback with no
@@ -427,8 +424,8 @@ microphone involved; `transcribe-once` exercises capture and recognition with no
 translation or speech involved:
 
 ```powershell
-live-translator say --config $ENDE --text "Guten Morgen"
-live-translator transcribe-once --config $ENDE --seconds 5
+uv run --frozen live-translator say --config $ENDE --text "Guten Morgen"
+uv run --frozen live-translator transcribe-once --config $ENDE --seconds 5
 ```
 
 ## Build the Windows Installer
@@ -439,7 +436,7 @@ make sure its `ISCC.exe` compiler is available on `PATH`, then run from the
 repository root:
 
 ```powershell
-.\scripts\build_windows.ps1 -InstallBuildTools
+.\scripts\build_windows.ps1
 .\scripts\build_inno_installer.ps1
 
 & .\dist\LiveTranslator\LiveTranslator.exe --help

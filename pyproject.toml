@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "live-translator-local"
 version = "0.2.0"
 description = "Offline phrase-level speech translation for Windows meetings"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "av>=11,<19",
     "ctranslate2>=4,<5",
@@ -27,6 +27,17 @@ all = [
     "argostranslate>=1.9,<2",
     "pyttsx3>=2.90,<3",
     "pyinstaller>=6,<7",
+]
+
+[dependency-groups]
+security = ["pip-audit==2.10.1"]
+
+[tool.uv]
+required-version = "==0.12.9"
+override-dependencies = [
+    # argostranslate 1.11.0 pins vulnerable stanza 1.10.1. Stanza 1.12.2
+    # removes the unsafe pickle fallback tracked as GHSA-v5jw-96jm-7h2c.
+    "stanza>=1.12.2,<2",
 ]
 
 [project.scripts]

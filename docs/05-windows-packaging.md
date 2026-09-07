@@ -24,11 +24,11 @@ accepted: size, SHA-256 and the absence of unlisted files are checked.
 From the repository root:
 
 ```powershell
-.\scripts\build_windows.ps1 -InstallBuildTools
+.\scripts\build_windows.ps1
 ```
 
-Later builds can omit `-InstallBuildTools` once PyInstaller is installed in the
-project virtual environment.
+The script creates a locked, dedicated `.build-venv` through `uv`; it does not
+modify the developer's project virtual environment or its optional extras.
 
 Run only the source-asset preflight with:
 
