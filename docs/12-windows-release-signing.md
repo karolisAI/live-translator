@@ -65,6 +65,11 @@ certificate in `CurrentUser\My`, adapt the signing function to that service
 after its identity, authentication and evidence model are approved. Do not
 store a long-lived service token in the repository.
 
+The timestamp URL may use HTTP or HTTPS, as supported by common RFC 3161
+services. Timestamp authenticity and integrity come from the cryptographically
+signed timestamp token, which is verified with the artifact signature; the
+transport scheme is not treated as the timestamp's trust boundary.
+
 ## Local unsigned build
 
 These commands continue to produce development artifacts and print an
@@ -119,12 +124,14 @@ On Windows, run:
 
 The test creates an ephemeral self-signed certificate in the current user's
 personal store, signs a disposable copy of an unsigned launcher, confirms that
-the embedded signature belongs to that certificate, modifies the signed copy
-and confirms verification fails. It does not add the development certificate
-to the trusted-root store. Its `finally` block removes the certificate and
-deletes the temporary files. GitHub Actions runs the same test on a disposable
-Windows runner. The approved build scripts never enable the development-only
-untrusted-certificate mode: they still require Windows trust and a timestamp.
+the embedded signature belongs to that certificate, modifies a byte in the
+signed DOS-stub region and confirms an Authenticode hash mismatch. It does not
+add the development certificate to the trusted-root store. Its `finally` block
+removes the certificate and deletes the temporary files. The test-only script
+inspects the self-signed signature directly; the production verification
+function has no untrusted-certificate bypass and always requires SignTool and
+Windows to report a trusted signature. GitHub Actions runs the same test on a
+disposable Windows runner.
 
 This proves the signing and tamper-detection mechanics. It does not prove a
 production publisher identity, public certificate trust, timestamp service,

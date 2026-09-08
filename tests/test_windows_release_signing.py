@@ -28,7 +28,12 @@ class WindowsReleaseSigningContractTests(unittest.TestCase):
                 self.assertIn(required, module)
         self.assertIn("RequireTimestamp", module)
         self.assertIn("TimeStamperCertificate", module)
-        self.assertIn('Scheme -ne "https"', module)
+        self.assertIn('$timestampUri.Scheme -notin @("http", "https")', module)
+
+    def test_signtool_sdk_versions_are_sorted_semantically(self):
+        module = self._read("scripts/windows_release_security.psm1")
+        self.assertIn("[Version]::TryParse", module)
+        self.assertIn("Sort-Object Version -Descending", module)
 
     def test_executable_is_verified_before_installer_creation(self):
         script = self._read("scripts/build_inno_installer.ps1")
@@ -46,6 +51,16 @@ class WindowsReleaseSigningContractTests(unittest.TestCase):
                 self.assertIn("Assert-WindowsSignature", script)
                 self.assertIn("RequireTimestamp", script)
                 self.assertNotIn("AllowUntrustedDevelopmentCertificate", script)
+
+        module = self._read("scripts/windows_release_security.psm1")
+        self.assertNotIn("AllowUntrustedDevelopmentCertificate", module)
+
+    def test_installer_validation_uses_locked_build_environment(self):
+        installer_build = self._read("scripts/build_inno_installer.ps1")
+        self.assertIn(".build-venv", installer_build)
+        self.assertIn("sync --frozen --extra build --no-default-groups", installer_build)
+        self.assertIn("run --frozen --extra build --no-default-groups", installer_build)
+        self.assertNotIn('.venv\\Scripts\\python.exe', installer_build)
 
     def test_release_evidence_includes_hashes_signatures_and_sbom(self):
         installer_build = self._read("scripts/build_inno_installer.ps1")
@@ -69,7 +84,10 @@ class WindowsReleaseSigningContractTests(unittest.TestCase):
     def test_ephemeral_test_checks_tampering_and_cleans_certificate(self):
         test_script = self._read("scripts/test_windows_signing.ps1")
         self.assertIn("New-SelfSignedCertificate", test_script)
-        self.assertIn("AppendAllText", test_script)
+        self.assertIn("FileMode]::Open", test_script)
+        self.assertIn("WriteByte", test_script)
+        self.assertIn("HashMismatch", test_script)
+        self.assertNotIn("AppendAllText", test_script)
         self.assertIn("Tampered executable unexpectedly passed", test_script)
         self.assertIn("certutil.exe -user -delstore", test_script)
         self.assertIn("finally", test_script)

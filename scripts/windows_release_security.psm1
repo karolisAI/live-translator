@@ -20,10 +20,20 @@ function Resolve-SignTool {
     if (Test-Path -LiteralPath $kitsRoot -PathType Container) {
         $candidate = Get-ChildItem -LiteralPath $kitsRoot -Filter "signtool.exe" -File -Recurse |
             Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
-            Sort-Object FullName -Descending |
+            ForEach-Object {
+                $versionDirectory = Split-Path (Split-Path $_.DirectoryName -Parent) -Leaf
+                $sdkVersion = $null
+                if ([Version]::TryParse($versionDirectory, [ref]$sdkVersion)) {
+                    [PSCustomObject]@{
+                        File = $_
+                        Version = $sdkVersion
+                    }
+                }
+            } |
+            Sort-Object Version -Descending |
             Select-Object -First 1
         if ($candidate) {
-            return $candidate.FullName
+            return $candidate.File.FullName
         }
     }
 
@@ -44,8 +54,8 @@ function Assert-ApprovedSigningConfiguration {
 
     $timestampUri = $null
     if (-not [Uri]::TryCreate($TimestampUrl, [UriKind]::Absolute, [ref]$timestampUri) -or
-        $timestampUri.Scheme -ne "https") {
-        throw "Approved releases require an absolute HTTPS RFC 3161 timestamp URL."
+        $timestampUri.Scheme -notin @("http", "https")) {
+        throw "Approved releases require an absolute HTTP or HTTPS RFC 3161 timestamp URL."
     }
 
     return $normalizedThumbprint
@@ -81,32 +91,25 @@ function Assert-WindowsSignature {
         [Parameter(Mandatory = $true)][string]$FilePath,
         [Parameter(Mandatory = $true)][string]$ExpectedThumbprint,
         [switch]$RequireTimestamp,
-        [switch]$AllowUntrustedDevelopmentCertificate,
         [string]$EvidencePath,
         [string]$SignToolPath
     )
 
     $resolvedFile = (Resolve-Path -LiteralPath $FilePath -ErrorAction Stop).Path
     $resolvedSignTool = Resolve-SignTool -SignToolPath $SignToolPath
-    if (-not $AllowUntrustedDevelopmentCertificate) {
-        $output = & $resolvedSignTool verify /pa /all /v $resolvedFile 2>&1
-        $exitCode = $LASTEXITCODE
-        if ($EvidencePath) {
-            $evidenceParent = Split-Path -Parent $EvidencePath
-            New-Item -ItemType Directory -Path $evidenceParent -Force | Out-Null
-            $output | Out-File -LiteralPath $EvidencePath -Encoding utf8
-        }
-        if ($exitCode -ne 0) {
-            throw "Authenticode verification failed for $resolvedFile."
-        }
+    $output = & $resolvedSignTool verify /pa /all /v $resolvedFile 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($EvidencePath) {
+        $evidenceParent = Split-Path -Parent $EvidencePath
+        New-Item -ItemType Directory -Path $evidenceParent -Force | Out-Null
+        $output | Out-File -LiteralPath $EvidencePath -Encoding utf8
+    }
+    if ($exitCode -ne 0) {
+        throw "Authenticode verification failed for $resolvedFile."
     }
 
     $signature = Get-AuthenticodeSignature -LiteralPath $resolvedFile
-    $acceptedStatus = @([System.Management.Automation.SignatureStatus]::Valid)
-    if ($AllowUntrustedDevelopmentCertificate) {
-        $acceptedStatus += [System.Management.Automation.SignatureStatus]::UnknownError
-    }
-    if ($signature.Status -notin $acceptedStatus) {
+    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
         throw "Windows does not trust the Authenticode signature on $resolvedFile (status: $($signature.Status))."
     }
     $actualThumbprint = $signature.SignerCertificate.Thumbprint.Replace(" ", "").ToUpperInvariant()
@@ -116,9 +119,6 @@ function Assert-WindowsSignature {
     }
     if ($RequireTimestamp -and $null -eq $signature.TimeStamperCertificate) {
         throw "The signature on $resolvedFile has no trusted timestamp."
-    }
-    if ($RequireTimestamp -and $AllowUntrustedDevelopmentCertificate) {
-        throw "An approved timestamp cannot be verified in development-certificate mode."
     }
 }
 

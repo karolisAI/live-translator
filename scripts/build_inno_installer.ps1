@@ -8,7 +8,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
-$Python = Join-Path $Root ".venv\Scripts\python.exe"
 $DistRoot = Join-Path $Root "dist\LiveTranslator"
 $DistInternal = Join-Path $DistRoot "_internal"
 $DistExe = Join-Path $DistRoot "LiveTranslator.exe"
@@ -29,18 +28,35 @@ if (-not (Test-Path -LiteralPath $DistExe -PathType Leaf)) {
     throw "Build output not found. Run .\scripts\build_windows.ps1 first."
 }
 
-if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
-    throw "Missing venv Python at $Python. It is required to verify dist before packaging."
-}
 if (-not (Test-Path -LiteralPath $DistSbom -PathType Leaf)) {
     throw "Release SBOM is missing: $DistSbom"
 }
 
-& $Python -m live_translator.validate_assets `
-    --root $DistInternal `
-    --manifest (Join-Path $DistInternal "runtime-assets.manifest.json")
-if ($LASTEXITCODE -ne 0) {
-    throw "Packaged dist asset validation failed. Installer creation stopped."
+$Uv = Get-Command uv -ErrorAction SilentlyContinue
+if ($null -eq $Uv) {
+    throw "uv is required for reproducible packaged-asset validation. Install the pinned version from pyproject.toml."
+}
+$PreviousBuildEnvironment = $env:UV_PROJECT_ENVIRONMENT
+$env:UV_PROJECT_ENVIRONMENT = Join-Path $Root ".build-venv"
+try {
+    & $Uv.Source sync --frozen --extra build --no-default-groups
+    if ($LASTEXITCODE -ne 0) {
+        throw "Locked build environment synchronization failed."
+    }
+    & $Uv.Source run --frozen --extra build --no-default-groups python -m live_translator.validate_assets `
+        --root $DistInternal `
+        --manifest (Join-Path $DistInternal "runtime-assets.manifest.json")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Packaged dist asset validation failed. Installer creation stopped."
+    }
+}
+finally {
+    if ($null -eq $PreviousBuildEnvironment) {
+        Remove-Item Env:UV_PROJECT_ENVIRONMENT -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:UV_PROJECT_ENVIRONMENT = $PreviousBuildEnvironment
+    }
 }
 
 if ($ApprovedRelease) {

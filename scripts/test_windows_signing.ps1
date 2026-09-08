@@ -33,25 +33,41 @@ try {
         -FilePath $testExe `
         -CertificateThumbprint $certificate.Thumbprint `
         -SignToolPath $SignToolPath
-    Assert-WindowsSignature `
-        -FilePath $testExe `
-        -ExpectedThumbprint $certificate.Thumbprint `
-        -AllowUntrustedDevelopmentCertificate `
-        -SignToolPath $SignToolPath
-
-    [System.IO.File]::AppendAllText($testExe, "tampered")
-    try {
-        Assert-WindowsSignature `
-            -FilePath $testExe `
-            -ExpectedThumbprint $certificate.Thumbprint `
-            -AllowUntrustedDevelopmentCertificate `
-            -SignToolPath $SignToolPath
-        throw "Tampered executable unexpectedly passed signature verification."
+    $signature = Get-AuthenticodeSignature -LiteralPath $testExe
+    if ($null -eq $signature.SignerCertificate -or
+        $signature.SignerCertificate.Thumbprint -ne $certificate.Thumbprint) {
+        throw "The test executable was not signed by the ephemeral test certificate."
     }
-    catch {
-        if ($_.Exception.Message -eq "Tampered executable unexpectedly passed signature verification.") {
-            throw
+    if ($signature.Status -notin @(
+            [System.Management.Automation.SignatureStatus]::Valid,
+            [System.Management.Automation.SignatureStatus]::UnknownError
+        )) {
+        throw "The ephemeral test signature could not be read (status: $($signature.Status))."
+    }
+
+    # Offset 0x40 is in the signed DOS-stub region, before the PE certificate table.
+    $stream = [System.IO.File]::Open(
+        $testExe,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
+    )
+    try {
+        $stream.Position = 0x40
+        $originalByte = $stream.ReadByte()
+        if ($originalByte -lt 0) {
+            throw "The test executable is too small for the tamper test."
         }
+        $stream.Position = 0x40
+        $stream.WriteByte($originalByte -bxor 0x01)
+    }
+    finally {
+        $stream.Dispose()
+    }
+
+    $tamperedSignature = Get-AuthenticodeSignature -LiteralPath $testExe
+    if ($tamperedSignature.Status -ne [System.Management.Automation.SignatureStatus]::HashMismatch) {
+        throw "Tampered executable unexpectedly passed signature verification (status: $($tamperedSignature.Status))."
     }
 
     Write-Host "Ephemeral signing test passed: valid signature accepted and tampering rejected."
