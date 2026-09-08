@@ -118,10 +118,13 @@ the remaining authenticity and time-of-check/time-of-use limitations below
 must stay recorded against the corresponding Notion risk.
 
 This control detects changes relative to the manifest; it does not establish
-who published the manifest. The Windows executable and installer remain
-unsigned. An attacker who can replace both the application and its manifest can
-bypass an in-application hash check. Code signing, controlled release
-publication and independent release-hash verification remain required.
+who published the manifest. The fail-closed Authenticode workflow in
+[12-windows-release-signing.md](12-windows-release-signing.md) is implemented,
+but current artifacts remain unsigned until the organization provisions its
+approved signing identity. An attacker who can replace both an unsigned
+application and its manifest can bypass an in-application hash check. Only a
+verified organization-signed release with retained hashes and SBOM closes that
+distribution-authenticity portion of the risk.
 
 Verification occurs during engine preparation and is cached. A same-user
 attacker who can modify an asset after verification but before a later use may

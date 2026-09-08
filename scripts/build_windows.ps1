@@ -1,9 +1,26 @@
 [CmdletBinding()]
-param([switch]$ValidateOnly)
+param(
+    [switch]$ValidateOnly,
+    [switch]$ApprovedRelease,
+    [string]$CertificateThumbprint = $env:LIVE_TRANSLATOR_SIGNING_CERT_THUMBPRINT,
+    [string]$TimestampUrl = $env:LIVE_TRANSLATOR_SIGNING_TIMESTAMP_URL,
+    [string]$SignToolPath
+)
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
+
+$releaseSecurityModule = Join-Path $PSScriptRoot "windows_release_security.psm1"
+Import-Module $releaseSecurityModule -Force
+$normalizedThumbprint = $null
+$resolvedSignTool = $null
+if ($ApprovedRelease) {
+    $normalizedThumbprint = Assert-ApprovedSigningConfiguration `
+        -CertificateThumbprint $CertificateThumbprint `
+        -TimestampUrl $TimestampUrl
+    $resolvedSignTool = Resolve-SignTool -SignToolPath $SignToolPath
+}
 
 $Uv = Get-Command uv -ErrorAction SilentlyContinue
 if ($null -eq $Uv) {
@@ -76,9 +93,28 @@ try {
         throw "Packaged executable smoke test failed with exit code $LASTEXITCODE."
     }
 
+    if ($ApprovedRelease) {
+        $evidenceDir = Join-Path $DistRoot "release-evidence"
+        Invoke-WindowsSign `
+            -FilePath $DistExe `
+            -CertificateThumbprint $normalizedThumbprint `
+            -TimestampUrl $TimestampUrl `
+            -SignToolPath $resolvedSignTool
+        Assert-WindowsSignature `
+            -FilePath $DistExe `
+            -ExpectedThumbprint $normalizedThumbprint `
+            -RequireTimestamp `
+            -EvidencePath (Join-Path $evidenceDir "LiveTranslator.exe.signature.txt") `
+            -SignToolPath $resolvedSignTool
+    }
+    else {
+        Write-Warning "Unsigned local build: this output is not an approved release."
+    }
+
     Write-Host ""
     Write-Host "Built and verified: $DistExe"
     Write-Host "Dependency SBOM:   $DistSbom"
+    Write-Host "Release status:    $(if ($ApprovedRelease) { 'signed executable verified' } else { 'unsigned local build' })"
     Write-Host "Try:                $DistExe setup"
 }
 finally {

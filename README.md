@@ -93,9 +93,12 @@ do not need to modify the Python source.
    to create the default English-to-German profile with automatic audio-device
    selection.
 
-The installer is currently unsigned. Only continue past a Windows SmartScreen
-warning when the file came from the project's trusted internal distribution
-channel. The installed executable is located at:
+Current installers remain unsigned until the organization provisions the
+approved publisher identity described in
+[`docs/12-windows-release-signing.md`](docs/12-windows-release-signing.md).
+Only continue past a Windows SmartScreen warning when the file came from the
+project's trusted internal distribution channel. The installed executable is
+located at:
 
 ```text
 %LOCALAPPDATA%\Programs\LiveTranslator\LiveTranslator.exe
@@ -443,6 +446,14 @@ repository root:
 Get-FileHash .\dist\installer\LiveTranslatorSetup.exe -Algorithm SHA256
 ```
 
+Those commands create explicitly unsigned local development artifacts. Once
+an organization-approved signing identity and timestamp service are available,
+the protected release environment uses `-ApprovedRelease` for both commands.
+That mode signs and verifies the executable before installer creation, signs
+and verifies the installer, and retains `SHA256SUMS.txt`, both signature reports
+and the matching SBOM. See
+[`docs/12-windows-release-signing.md`](docs/12-windows-release-signing.md).
+
 Validate without producing a new EXE or installer:
 
 ```powershell
@@ -489,6 +500,7 @@ Additional references:
 - `docs/09-incident-response.md`: incident classification and response procedure
 - `docs/10-recurring-security-review.md`: weekly, monthly, release and quarterly checks
 - `docs/11-security-process-validation.md`: tabletop validation evidence
+- `docs/12-windows-release-signing.md`: Authenticode workflow, evidence and production prerequisites
 - `SECURITY.md`: private vulnerability reporting instructions
 
 Benchmark write-ups and their audio live in `research/`, which is not tracked in

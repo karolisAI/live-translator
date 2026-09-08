@@ -72,8 +72,11 @@ an upstream fix is usable. Example (not an approval):
 
 CI and the Windows build generate a CycloneDX 1.5 JSON SBOM from the frozen
 lock. CI validates it and uploads it as `live-translator-sbom`. A Windows build
-writes `dist/LiveTranslator/live-translator.cdx.json`; retain it with the exact
-installer and release hashes it describes.
+writes `dist/LiveTranslator/live-translator.cdx.json`. The approved signing
+workflow copies that exact SBOM into the final release-evidence directory and
+includes it in `SHA256SUMS.txt` beside the executable and installer, binding the
+retained evidence to the same release. See
+[12-windows-release-signing.md](12-windows-release-signing.md).
 
 ## GitHub Actions
 
