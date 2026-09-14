@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from time import perf_counter
 
 from live_translator.asr import AsrEngine, TranscriptResult, create_asr
@@ -43,6 +43,10 @@ class LocalTranslatorPipeline:
         self._capture_limits: CaptureLimits | None = None
         self._capture_failure_warned = False
         self._show_text = False
+        self._label: str | None = None
+        """Prefix for this direction's printed lines, so two directions running
+        at once (see BidirectionalSession) read as separate columns. None in the
+        single-direction path, which prints unprefixed as before."""
 
     def prepare(self, *, include_tts: bool = True) -> None:
         started = perf_counter()
@@ -164,13 +168,57 @@ class LocalTranslatorPipeline:
             # by process count, not assumed.
             self._get_speaker().close()
 
+    def run_prepared(
+        self,
+        *,
+        stop_event: Event,
+        label: str | None = None,
+        chunker_mode: str | None = None,
+        debug_audio_dir: str | Path | None = None,
+        verbose: bool = False,
+        diagnostics: bool = False,
+        show_text: bool = False,
+    ) -> None:
+        """Run one direction's meeting loop until `stop_event` is set.
+
+        Unlike `loopback`, this assumes `prepare()` has already run and does not
+        close the speaker on the way out -- the caller (BidirectionalSession)
+        owns the model lifecycle so it can prepare several directions, run them
+        concurrently, and tear them all down together. `stop_event` is the one
+        knob that ends this direction: the caller sets it to stop, and a worker
+        failure sets the same event (it is the workers' stop_event), so the
+        capture loop and workers wind down the same way in both cases.
+        """
+        self._verbose = verbose
+        self._show_text = show_text
+        self._print_audio_route()
+        self._run_meeting(
+            chunker_mode,
+            debug_audio_dir,
+            diagnostics=diagnostics,
+            stop_event=stop_event,
+            label=label,
+        )
+
+    def close(self) -> None:
+        """Release this direction's resident speech process, if one was started.
+
+        Safe to call when nothing was prepared -- `_get_speaker()` is lazy, so
+        this only touches a speaker that actually exists.
+        """
+        if self._speaker is not None:
+            self._speaker.close()
+
     def _run_meeting(
         self,
         chunker_mode: str | None,
         debug_audio_dir: str | Path | None,
         *,
         diagnostics: bool,
+        stop_event: Event | None = None,
+        label: str | None = None,
     ) -> None:
+        self._label = label
         translator = self._get_translator()
         speaker = self._get_speaker()
         debug_dir = self._start_diagnostics(
@@ -186,8 +234,8 @@ class LocalTranslatorPipeline:
 
         source = self._config.translation.source_language.upper()
         target = self._config.translation.target_language.upper()
-        print(f"Direction: {source} -> {target}")
-        print("Live translation active. Listening continuously between phrases.")
+        print(f"{self._line_prefix()}Direction: {source} -> {target}")
+        print(f"{self._line_prefix()}Live translation active. Listening continuously between phrases.")
         self._announce_text_display()
         if self._verbose and chunker == "vad":
             print(
@@ -211,7 +259,7 @@ class LocalTranslatorPipeline:
                 f"input={self._config.audio.input_device or 'default'} "
                 f"output={self._config.audio.output_device or 'default'}"
             )
-        workers = self._create_realtime_workers(translator, speaker, debug_dir)
+        workers = self._create_realtime_workers(translator, speaker, debug_dir, stop_event=stop_event)
         workers.start()
         interrupted = False
         try:
@@ -354,13 +402,25 @@ class LocalTranslatorPipeline:
         translator: TranslationEngine,
         speaker: TtsSpeaker,
         debug_dir: Path | None,
+        *,
+        stop_event: Event | None = None,
     ) -> RealtimeMeetingWorkers:
         return RealtimeMeetingWorkers(
             lambda segment: self._process_live_segment(segment, translator, speaker, debug_dir),
             speaker.play,
             segment_queue_size=self._config.realtime.recognition_queue_size,
             playback_queue_size=self._config.realtime.playback_queue_size,
+            stop_event=stop_event,
         )
+
+    def _line_prefix(self) -> str:
+        """`"[EN->DE] "` when a direction is labelled, `""` otherwise.
+
+        Two directions running concurrently interleave their per-phrase output;
+        the prefix is what lets the reader tell which line each belongs to. The
+        single-direction path leaves the label unset and prints as before.
+        """
+        return f"[{self._label}] " if self._label else ""
 
     def _transcribe_audio_if_safe(self, audio) -> TranscriptResult | None:
         if not self._audio_passes_energy_gate(audio):
@@ -418,9 +478,10 @@ class LocalTranslatorPipeline:
         # deserves the same warning as someone reading the source line. See
         # asr.flag_log_prob_threshold.
         marker = " [low confidence]" if low_confidence else ""
+        prefix = self._line_prefix()
         print()
-        print(f"{source}{marker}: {source_text}")
-        print(f"{target}{marker}: {target_text}")
+        print(f"{prefix}{source}{marker}: {source_text}")
+        print(f"{prefix}{target}{marker}: {target_text}")
 
     def _announce_text_display(self) -> None:
         """Say once that the conversation will be on screen.
@@ -450,7 +511,7 @@ class LocalTranslatorPipeline:
         marker = "    low confidence" if low_confidence else ""
         audio_seconds = len(segment.audio) / self._config.audio.sample_rate
         print(
-            f"Phrase {segment.number:>3}    {audio_seconds:.1f}s    "
+            f"{self._line_prefix()}Phrase {segment.number:>3}    {audio_seconds:.1f}s    "
             f"ready in {elapsed_seconds:.1f}s{marker}"
         )
 

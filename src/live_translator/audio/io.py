@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import sys
 import wave
+from contextlib import contextmanager
 from pathlib import Path
+from threading import Lock, local
 from time import sleep
 from typing import Any
 
@@ -11,6 +14,75 @@ from live_translator.audio.devices import (
 )
 from live_translator.config import AudioSettings
 from live_translator.errors import MissingDependency
+
+
+AUDIO_STREAM_LOCK = Lock()
+"""Serialises PortAudio stream opens across threads.
+
+PortAudio stream creation/start is not safe to run from two threads at the same
+time. A bidirectional session opens one capture stream per direction, each on
+its own thread, and each direction's playback worker opens output streams too,
+so without this two opens can race. Held only while opening a stream, never
+while it runs, so audio still flows concurrently once every stream is open.
+Single-direction mode never contends for it.
+"""
+
+_thread_com = local()
+
+
+def _ensure_thread_com() -> None:
+    """Initialise COM on the current thread once (Windows only).
+
+    PortAudio's WASAPI/MMDevice backend needs COM initialised on whichever
+    thread opens a stream. The main thread gets it from PortAudio's own init,
+    but a plain worker thread does not, so its first stream open fails -- on
+    Windows this surfaces as a WDM-KS `DeviceIoControl` error. A bidirectional
+    session opens every capture stream (and its playback streams) on worker
+    threads, so each must initialise COM first. Uses the multithreaded
+    apartment, which needs no message pump -- these threads only open a stream.
+    Never uninitialised on purpose: the threads live for the whole session, and
+    the process tears COM down on exit.
+    """
+    if sys.platform != "win32":
+        return
+    if getattr(_thread_com, "ready", False):
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.ole32.CoInitializeEx(None, 0x0)  # COINIT_MULTITHREADED
+    except Exception:
+        # An already-initialised thread (S_FALSE) or a different-apartment
+        # thread (RPC_E_CHANGED_MODE) is still usable; only record that we tried.
+        pass
+    _thread_com.ready = True
+
+
+@contextmanager
+def audio_open_guard():
+    """Wrap a PortAudio stream open: COM-ready thread, then a serialised open.
+
+    Every place that opens a capture or playback stream uses this, so an open
+    from any thread is both COM-initialised (see `_ensure_thread_com`) and
+    serialised against other opens (see `AUDIO_STREAM_LOCK`).
+    """
+    _ensure_thread_com()
+    with AUDIO_STREAM_LOCK:
+        yield
+
+
+def ensure_audio_ready() -> None:
+    """Initialise PortAudio on the calling thread; call once on the main thread.
+
+    PortAudio's first-time initialisation is not safe to trigger from the worker
+    threads that open each direction's stream. Single-direction mode never hit
+    this because it opens its first stream on the main thread; a bidirectional
+    session opens every stream on a worker thread, so it must force that first
+    initialisation here, up front, before starting them. Cheap and idempotent.
+    """
+    sd, _ = _audio_packages()
+    with AUDIO_STREAM_LOCK:
+        sd.query_devices()
 
 
 def record_mono(
@@ -82,14 +154,18 @@ def play_mono(audio: Any, settings: AudioSettings) -> None:
     for attempt in range(3):
         stream = None
         try:
-            stream = sd.OutputStream(
-                samplerate=playback_rate,
-                channels=output_channels,
-                dtype="float32",
-                device=device_index,
-                latency="high",
-            )
-            stream.start()
+            # Only the open is guarded (COM-ready thread + serialised open); the
+            # write below streams the audio and must not block another
+            # direction's open for its whole duration.
+            with audio_open_guard():
+                stream = sd.OutputStream(
+                    samplerate=playback_rate,
+                    channels=output_channels,
+                    dtype="float32",
+                    device=device_index,
+                    latency="high",
+                )
+                stream.start()
         except Exception as exc:
             last_error = exc
             if stream is not None:

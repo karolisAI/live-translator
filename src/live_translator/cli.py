@@ -16,7 +16,7 @@ from live_translator.audio.devices import (
     probe_devices,
     resolve_device_index,
 )
-from live_translator.audio.io import _audio_packages, _select_sample_rate
+from live_translator.audio.io import _audio_packages, _select_sample_rate, ensure_audio_ready
 from live_translator.diagnostics import (
     NotOurDirectory,
     describe_capture,
@@ -30,6 +30,7 @@ from live_translator.mt.argos_packages import install_argos_package, print_insta
 from live_translator.pipeline import LocalTranslatorPipeline
 from live_translator.profiles import SUPPORTED_DIRECTIONS, prompt_for_device, write_meeting_profile
 from live_translator.runtime import default_profile_path
+from live_translator.session import BidirectionalSession, Direction
 from live_translator.tts import TtsSpeaker
 
 TRANSLATION_ENGINES = ("identity", "argos")
@@ -217,6 +218,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     loopback.add_argument("--verbose", action="store_true", help="show audio gates and per-segment timings")
     loopback.set_defaults(func=cmd_loopback)
+
+    converse = subparsers.add_parser(
+        "converse",
+        help="run two meeting directions at once (bidirectional, one process)",
+        description="Runs two one-way profiles concurrently, e.g. en-de outbound "
+        "and de-en inbound, so one running app carries both halves of a "
+        "conversation. Each direction keeps its own devices, models, and voice; "
+        "point the two profiles at different input/output devices.",
+    )
+    converse.add_argument("--outbound-config", default=None, help="explicit config path for the outbound direction")
+    converse.add_argument("--outbound-profile", default=None, help="profile name for the outbound direction")
+    converse.add_argument("--inbound-config", default=None, help="explicit config path for the inbound direction")
+    converse.add_argument("--inbound-profile", default=None, help="profile name for the inbound direction")
+    converse.add_argument(
+        "--show-text",
+        action="store_true",
+        help="print each phrase and its translation on screen; writes nothing to disk",
+    )
+    converse.add_argument("--verbose", action="store_true", help="show audio gates and per-segment timings")
+    converse.set_defaults(func=cmd_converse)
 
     return parser
 
@@ -634,6 +655,54 @@ def cmd_loopback(args: argparse.Namespace) -> int:
         show_text=args.show_text,
     )
     return 0
+
+
+def cmd_converse(args: argparse.Namespace) -> int:
+    outbound_config = _resolve_direction_config(args.outbound_config, args.outbound_profile, "outbound")
+    inbound_config = _resolve_direction_config(args.inbound_config, args.inbound_profile, "inbound")
+
+    directions = [
+        _build_direction(outbound_config, args),
+        _build_direction(inbound_config, args),
+    ]
+    # Initialise PortAudio on the main thread first: each direction opens its
+    # streams from its own worker thread, and PortAudio's first-time init is not
+    # safe to trigger from there (single-direction mode never hit this because
+    # it opens on the main thread).
+    ensure_audio_ready()
+    BidirectionalSession(directions).run()
+    return 0
+
+
+def _resolve_direction_config(config_path: str | None, profile: str | None, role: str):
+    if config_path and profile:
+        raise ValueError(f"Pass only one of --{role}-config or --{role}-profile")
+    if config_path:
+        path = Path(config_path)
+    elif profile:
+        path = default_profile_path(profile)
+    else:
+        raise ValueError(f"Specify the {role} direction with --{role}-config or --{role}-profile")
+    return load_config(path)
+
+
+def _build_direction(config, args: argparse.Namespace) -> Direction:
+    label = (
+        f"{config.translation.source_language.upper()}->"
+        f"{config.translation.target_language.upper()}"
+    )
+    pipeline = LocalTranslatorPipeline(config)
+    return Direction(
+        label=label,
+        prepare=pipeline.prepare,
+        run=lambda stop, p=pipeline, l=label: p.run_prepared(
+            stop_event=stop,
+            label=l,
+            verbose=args.verbose,
+            show_text=args.show_text,
+        ),
+        close=pipeline.close,
+    )
 
 
 def build_config(args: argparse.Namespace):
