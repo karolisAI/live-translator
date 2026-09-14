@@ -22,9 +22,16 @@ No API key is required after the local models are prepared.
 - Transient Windows output-start failures are retried on the verified WASAPI
   endpoint. A phrase that still cannot play is reported without closing the
   microphone or ending the meeting session.
+- `converse` runs both directions concurrently in one process, each with its
+  own devices, models, and queues. A fatal error in one direction's
+  recognition or translation (a model crash, an unrecoverable device error)
+  stops only that direction: the other keeps running unaffected, a
+  direction-labeled warning names which one stopped, and typing
+  `restart <label>` at the console brings it back without ending the session.
 
-This is phrase-level, one-direction translation per process. It is not
-simultaneous duplex interpretation or stabilized word-by-word captioning.
+This is phrase-level translation, one direction per process except under
+`converse`, which runs two. It is not simultaneous duplex interpretation or
+stabilized word-by-word captioning.
 
 ```text
 physical microphone -> continuous VAD capture -> Parakeet -> Argos
@@ -484,7 +491,8 @@ python .\scripts\benchmark_meeting_integrity.py
 The automated suite covers configuration, audio analysis, resampling,
 continuous segmentation, recognizer decoding and confidence rejection,
 concurrent recognition/playback, overload behavior, worker failure propagation,
-and virtual-route tone detection. Hardware and model checks are performed with
+per-direction failure isolation and restart under `converse`, and
+virtual-route tone detection. Hardware and model checks are performed with
 `doctor`, `route-test`, `say`, and the one-shot commands.
 
 Additional references:

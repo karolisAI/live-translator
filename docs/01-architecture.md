@@ -2,13 +2,15 @@
 
 ## Scope
 
-Live Translator runs one speech-translation direction per process. A profile
-binds one physical microphone, one source language, one target language, one
-Piper voice, and one output endpoint.
+A profile binds one physical microphone, one source language, one target
+language, one Piper voice, and one output endpoint. `meeting` and `loopback`
+run a single such profile per process.
 
-English to German and German to English use separate profiles. The application
-does not currently capture the remote meeting audio or translate both sides of
-a conversation simultaneously.
+`converse` runs two profiles concurrently in one process instead -- e.g. an
+en-de outbound direction alongside a de-en inbound one -- so one running app
+carries both halves of a conversation. See
+[Bidirectional Sessions](#bidirectional-sessions) for how the two directions
+are isolated from each other.
 
 ## Startup
 
@@ -133,14 +135,48 @@ is skipped, with a warning naming the phrase number. An untrusted Piper path
 is treated differently from a transient failure: because it will resolve the
 same way again, it permanently disables further synthesis for the rest of the
 session rather than retrying every phrase, while transcription and translation
-keep running normally. A failure in recognition or translation itself remains
-fatal, since later phrases cannot be produced safely once that stage has
-failed.
+keep running normally. A failure in recognition or translation itself is
+fatal to that one direction's process -- later phrases for that direction
+cannot be produced safely once that stage has failed. Under `meeting` or
+`loopback` that is the whole process, since there is nothing else running in
+it. Under `converse` it is scoped to that direction alone; see
+[Bidirectional Sessions](#bidirectional-sessions).
 
 Generated profiles use VAD mode. It waits for sustained speech and commits one
 phrase after trailing silence or the configured maximum length. Rolling mode can
 also emit 2.4-second windows during uninterrupted speech, but overlap can repeat
 context or split a word, so it remains an explicit experimental option.
+
+## Bidirectional Sessions
+
+`converse` builds two independent instances of everything described above --
+one `LocalTranslatorPipeline` per direction, each with its own recognizer,
+translator, synthesizer, and recognition/playback queues -- and runs them
+concurrently in one process via `BidirectionalSession`
+(`src/live_translator/session.py`). The two directions share nothing but the
+session-wide stop signal, so a stall or crash in one can never block, corrupt,
+or silently affect the other's queues or state.
+
+Each direction's worker runs inside its own exception boundary
+(`BidirectionalSession._supervise`). An exception that escapes a direction's
+run loop -- the same "recognition or translation itself" failure described
+above, or an unexpected device error -- marks only that direction stopped: a
+direction-labeled warning is printed (`"[EN->DE] direction ended early: ...
+Other directions continue unaffected."`), that direction's resources are
+released immediately rather than held until the whole session ends, and every
+other direction's thread, queues, and state continue exactly as before. The
+session process itself keeps running as long as at least one direction is
+still alive; it does not exit just because one direction went down.
+
+A stopped direction does not restart on its own -- a model crash or device
+error is unlikely to be transient, so retrying automatically would most often
+just repeat the same failure. Recovering it is a deliberate, explicit act:
+typing `restart <label>` at the `converse` console rebuilds that direction
+from its original profile (a fresh pipeline, so it does not reuse whatever
+crashed) and starts it on a new thread, without touching the healthy
+direction or restarting the session. `BidirectionalSession.restart` refuses a
+direction that is still running, so this can only bring back one that has
+actually stopped.
 
 ## Lower-Latency Direction
 
@@ -265,8 +301,10 @@ cause was transient.
 
 ## Known Limits
 
-- One direction per running profile
-- No simultaneous incoming-audio translation
+- `converse` runs two directions, not an arbitrary number; each still needs
+  its own physical microphone and output endpoint
+- A stopped direction under `converse` must be restarted explicitly
+  (`restart <label>`); nothing retries it automatically
 - Phrase-level output rather than stabilized word-by-word streaming
 - No partial transcript stabilization or streaming TTS
 - No bundled speech model in the current Windows build

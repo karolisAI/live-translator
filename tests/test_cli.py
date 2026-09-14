@@ -8,7 +8,7 @@ from unittest.mock import patch
 import yaml
 
 from live_translator.asr.model_store import recorded_revision
-from live_translator.cli import build_parser, cmd_prepare_models, main
+from live_translator.cli import _parse_restart_command, build_parser, cmd_prepare_models, main
 from live_translator.defaults import ASR_MODEL_REVISION
 from test_model_store import network_blocked, prepare_dir
 
@@ -87,6 +87,45 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(args.chunker, "rolling")
+
+    def test_converse_accepts_both_direction_profiles(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "converse",
+                "--outbound-profile",
+                "en-de",
+                "--inbound-profile",
+                "de-en",
+            ]
+        )
+
+        self.assertEqual(args.outbound_profile, "en-de")
+        self.assertEqual(args.inbound_profile, "de-en")
+
+
+class ConverseRestartCommandTests(unittest.TestCase):
+    """`restart <label>` is how a user brings a failed direction back without
+    ending the `converse` session (US-1.3); this only covers the parsing --
+    test_bidirectional_integration.py covers the actual restart."""
+
+    def test_parses_the_label_after_restart(self) -> None:
+        self.assertEqual(_parse_restart_command("restart EN->DE"), "EN->DE")
+
+    def test_is_case_insensitive_on_the_command_itself(self) -> None:
+        self.assertEqual(_parse_restart_command("RESTART EN->DE"), "EN->DE")
+
+    def test_trims_surrounding_whitespace(self) -> None:
+        self.assertEqual(_parse_restart_command("  restart   EN->DE  "), "EN->DE")
+
+    def test_ignores_blank_lines(self) -> None:
+        self.assertIsNone(_parse_restart_command(""))
+        self.assertIsNone(_parse_restart_command("   "))
+
+    def test_ignores_a_bare_restart_with_no_label(self) -> None:
+        self.assertIsNone(_parse_restart_command("restart"))
+
+    def test_ignores_unrelated_input(self) -> None:
+        self.assertIsNone(_parse_restart_command("hello there"))
 
 
 class DiagnosticsFlagTests(unittest.TestCase):

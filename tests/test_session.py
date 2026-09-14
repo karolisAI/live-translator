@@ -166,6 +166,163 @@ class BidirectionalSessionTests(unittest.TestCase):
                 ]
             )
 
+    def test_healthy_direction_state_is_unaffected_by_the_other_failing(self) -> None:
+        # Simulates each direction's own phrase counter and queue: separate
+        # objects that a forced failure in "broken" must never touch.
+        healthy_phrase_count = {"value": 0}
+        healthy_queue: list[int] = []
+        warnings: list[str] = []
+
+        def run_broken(_stop: Event) -> None:
+            raise RuntimeError("recognizer crashed")
+
+        def run_healthy(stop: Event) -> None:
+            for phrase in range(5):
+                healthy_queue.append(phrase)
+                healthy_phrase_count["value"] += 1
+            stop.wait(timeout=2.0)
+
+        directions = [
+            Direction("broken", run=run_broken),
+            Direction("healthy", run=run_healthy),
+        ]
+        session = BidirectionalSession(directions, on_warning=warnings.append)
+        runner = Thread(target=session.run)
+        runner.start()
+        try:
+            wait_until(lambda: healthy_phrase_count["value"] == 5)
+            wait_until(lambda: any("broken" in w and "ended early" in w for w in warnings))
+            # The failure in "broken" changed none of "healthy"'s own state.
+            self.assertEqual(healthy_phrase_count["value"], 5)
+            self.assertEqual(healthy_queue, [0, 1, 2, 3, 4])
+            self.assertTrue(session.is_running("healthy"))
+            self.assertFalse(session.is_running("broken"))
+        finally:
+            session.stop()
+            runner.join(timeout=3.0)
+
+    def test_failed_direction_is_closed_promptly_and_only_once(self) -> None:
+        closed: list[str] = []
+        warnings: list[str] = []
+
+        directions = [
+            Direction(
+                "broken",
+                run=lambda _stop: (_ for _ in ()).throw(RuntimeError("boom")),
+                close=lambda: closed.append("broken"),
+            ),
+            Direction("healthy", run=lambda stop: stop.wait(timeout=2.0)),
+        ]
+        session = BidirectionalSession(directions, on_warning=warnings.append)
+        runner = Thread(target=session.run)
+        runner.start()
+        try:
+            # Closed while "healthy" is still running, well before the session
+            # as a whole ends.
+            wait_until(lambda: "broken" in closed)
+            self.assertTrue(runner.is_alive())
+        finally:
+            session.stop()
+            runner.join(timeout=3.0)
+
+        # Not closed a second time during the session's own teardown.
+        self.assertEqual(closed, ["broken"])
+
+    def test_restart_brings_back_a_failed_direction_without_touching_the_other(self) -> None:
+        healthy_running = Event()
+        warnings: list[str] = []
+        restarted_running = Event()
+
+        directions = [
+            Direction(
+                "broken",
+                run=lambda _stop: (_ for _ in ()).throw(RuntimeError("model crashed")),
+            ),
+            Direction(
+                "healthy",
+                run=lambda stop: (healthy_running.set(), stop.wait(timeout=5.0)),
+            ),
+        ]
+        session = BidirectionalSession(directions, on_warning=warnings.append)
+        runner = Thread(target=session.run)
+        runner.start()
+        try:
+            self.assertTrue(healthy_running.wait(timeout=1.0))
+            wait_until(lambda: not session.is_running("broken"))
+
+            def run_recovered(stop: Event) -> None:
+                restarted_running.set()
+                stop.wait(timeout=5.0)
+
+            session.restart(Direction("broken", run=run_recovered))
+
+            self.assertTrue(restarted_running.wait(timeout=1.0))
+            self.assertTrue(session.is_running("broken"))
+            # "healthy" was never disturbed by the restart of its peer.
+            self.assertTrue(session.is_running("healthy"))
+            self.assertTrue(runner.is_alive())
+        finally:
+            session.stop()
+            runner.join(timeout=3.0)
+        self.assertFalse(runner.is_alive())
+
+    def test_restart_refuses_a_direction_that_is_still_running(self) -> None:
+        directions = [
+            Direction("a", run=lambda stop: stop.wait(timeout=2.0)),
+            Direction("b", run=lambda stop: stop.wait(timeout=2.0)),
+        ]
+        session = BidirectionalSession(directions)
+        runner = Thread(target=session.run)
+        runner.start()
+        try:
+            wait_until(lambda: session.is_running("a"))
+            with self.assertRaisesRegex(RuntimeError, "still running"):
+                session.restart(Direction("a", run=lambda _stop: None))
+        finally:
+            session.stop()
+            runner.join(timeout=3.0)
+
+    def test_restart_rejects_an_unknown_label(self) -> None:
+        directions = [
+            Direction("a", run=lambda _stop: None),
+            Direction("b", run=lambda _stop: None),
+        ]
+        session = BidirectionalSession(directions)
+        with self.assertRaisesRegex(ValueError, "No direction named"):
+            session.restart(Direction("c", run=lambda _stop: None))
+
+    def test_restarted_direction_is_still_closed_when_the_session_ends(self) -> None:
+        closed: list[str] = []
+        directions = [
+            Direction(
+                "a",
+                run=lambda _stop: (_ for _ in ()).throw(RuntimeError("boom")),
+                close=lambda: closed.append("a-first"),
+            ),
+            Direction("b", run=lambda stop: stop.wait(timeout=3.0)),
+        ]
+        session = BidirectionalSession(directions)
+        runner = Thread(target=session.run)
+        runner.start()
+        try:
+            wait_until(lambda: not session.is_running("a"))
+            session.restart(
+                Direction(
+                    "a",
+                    run=lambda stop: stop.wait(timeout=3.0),
+                    close=lambda: closed.append("a-second"),
+                )
+            )
+            wait_until(lambda: session.is_running("a"))
+        finally:
+            session.stop()
+            runner.join(timeout=3.0)
+
+        # The first instance was closed once (on failure); the replacement
+        # installed by restart is closed once too (at session teardown).
+        self.assertEqual(closed.count("a-first"), 1)
+        self.assertEqual(closed.count("a-second"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

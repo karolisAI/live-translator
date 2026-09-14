@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import sys
 from pathlib import Path
+from threading import Thread
 from typing import Callable
 
 from live_translator.asr import SUPPORTED_ASR_ENGINES, create_asr
@@ -225,7 +226,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Runs two one-way profiles concurrently, e.g. en-de outbound "
         "and de-en inbound, so one running app carries both halves of a "
         "conversation. Each direction keeps its own devices, models, and voice; "
-        "point the two profiles at different input/output devices.",
+        "point the two profiles at different input/output devices. A fatal "
+        "error in one direction (a model crash, an unrecoverable device error) "
+        "stops only that direction -- the other keeps running, a labeled "
+        "warning names which one stopped, and typing 'restart <label>' at the "
+        "console brings it back without ending the session.",
     )
     converse.add_argument("--outbound-config", default=None, help="explicit config path for the outbound direction")
     converse.add_argument("--outbound-profile", default=None, help="profile name for the outbound direction")
@@ -665,6 +670,11 @@ def cmd_converse(args: argparse.Namespace) -> int:
         _build_direction(outbound_config, args),
         _build_direction(inbound_config, args),
     ]
+    # Keyed by direction label so a later `restart <label>` console command can
+    # rebuild the same direction from its own config -- restart needs a fresh
+    # pipeline (fresh ASR/translator/synthesizer), not the crashed one, so the
+    # config is kept rather than the already-built Direction.
+    configs_by_label = {direction.label: config for direction, config in zip(directions, (outbound_config, inbound_config))}
     # Initialise PortAudio on the main thread first: each direction opens its
     # streams from its own worker thread, and PortAudio's first-time init is not
     # safe to trigger from there (single-direction mode never hit this because
@@ -697,8 +707,66 @@ def cmd_converse(args: argparse.Namespace) -> int:
         outbound_config.tts.piper_timeout_seconds,
         inbound_config.tts.piper_timeout_seconds,
     ) + 10.0
-    BidirectionalSession(directions, join_timeout=join_timeout).run()
+    session = BidirectionalSession(directions, join_timeout=join_timeout)
+    print(
+        "If a direction stops (its own warning names it), type "
+        "'restart <label>' and press Enter to bring back just that direction "
+        "without ending this session; the other direction is not affected."
+    )
+    control_thread = Thread(
+        target=_run_direction_control_loop,
+        args=(session, configs_by_label, args),
+        name="live-translator-converse-control",
+        daemon=True,
+    )
+    control_thread.start()
+    session.run()
     return 0
+
+
+def _run_direction_control_loop(
+    session: BidirectionalSession, configs_by_label: dict, args: argparse.Namespace
+) -> None:
+    """Read console commands for the life of the session, on its own thread.
+
+    Runs as a daemon thread: `session.run()` on the main thread is what keeps
+    the process alive, so this never needs to signal back that it is done --
+    it simply stops mattering once every direction has ended and `run()`
+    returns.
+    """
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            return
+        parsed = _parse_restart_command(line)
+        if parsed is None:
+            continue
+        label = parsed
+        config = configs_by_label.get(label)
+        if config is None:
+            print(f"No direction named {label!r}. Known directions: {', '.join(sorted(configs_by_label))}")
+            continue
+        if session.is_running(label):
+            print(f"[{label}] is still running; nothing to restart.")
+            continue
+        try:
+            session.restart(_build_direction(config, args))
+        except (ValueError, RuntimeError) as exc:
+            print(f"[{label}] restart failed: {exc}")
+
+
+def _parse_restart_command(line: str) -> str | None:
+    """Pull the direction label out of a `restart <label>` console command.
+
+    Returns None for anything else (blank lines, typos, other commands),
+    which the caller silently ignores rather than treating as an error --
+    this reads stray Enter presses too, not just deliberate commands.
+    """
+    parts = line.strip().split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "restart":
+        return None
+    return parts[1].strip()
 
 
 def _resolve_direction_config(config_path: str | None, profile: str | None, role: str):
