@@ -109,6 +109,37 @@ class BidirectionalSessionTests(unittest.TestCase):
             session.stop()
             runner.join(timeout=3.0)
 
+    def test_prepare_failure_still_closes_already_prepared_directions(self) -> None:
+        closed: list[str] = []
+        ran: list[str] = []
+
+        def failing_prepare() -> None:
+            raise RuntimeError("model load failed")
+
+        directions = [
+            Direction(
+                "first",
+                run=lambda _stop: ran.append("first"),
+                prepare=lambda: None,
+                close=lambda: closed.append("first"),
+            ),
+            Direction(
+                "second",
+                run=lambda _stop: ran.append("second"),
+                prepare=failing_prepare,
+                close=lambda: closed.append("second"),
+            ),
+        ]
+        session = BidirectionalSession(directions)
+        # The failure propagates, but cleanup must run first.
+        with self.assertRaisesRegex(RuntimeError, "model load failed"):
+            session.run()
+
+        # "first" was prepared before "second" failed, so it must be closed even
+        # though the session never got to run anything.
+        self.assertIn("first", closed)
+        self.assertEqual(ran, [])
+
     def test_returns_when_all_directions_finish_on_their_own(self) -> None:
         # A direction that returns immediately should not hang the session:
         # run() ends once the last thread exits, with no stop() call.

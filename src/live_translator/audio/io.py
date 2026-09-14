@@ -93,22 +93,27 @@ def record_mono(
 ) -> Any:
     sd, np = _audio_packages()
     duration = seconds if seconds is not None else settings.chunk_seconds
-    device_index = resolve_device_index(settings.input_device, "input", role="physical_input")
-    capture_rate = _select_sample_rate(sd, device_index, "input", settings.sample_rate)
-    frames = int(capture_rate * duration)
+    # Guard the device probe and recording open like the streaming capture path,
+    # so fixed-mode capture also works from a worker thread (converse runs each
+    # direction off the main thread). sd.wait() blocks for the whole recording,
+    # so it stays outside the guard.
+    with audio_open_guard():
+        device_index = resolve_device_index(settings.input_device, "input", role="physical_input")
+        capture_rate = _select_sample_rate(sd, device_index, "input", settings.sample_rate)
+        frames = int(capture_rate * duration)
 
-    if announce:
-        print(
-            f"Recording {duration:.1f}s at {capture_rate} Hz"
-            f" from {settings.input_device or 'default input'}..."
+        if announce:
+            print(
+                f"Recording {duration:.1f}s at {capture_rate} Hz"
+                f" from {settings.input_device or 'default input'}..."
+            )
+        audio = sd.rec(
+            frames,
+            samplerate=capture_rate,
+            channels=1,
+            dtype="float32",
+            device=device_index,
         )
-    audio = sd.rec(
-        frames,
-        samplerate=capture_rate,
-        channels=1,
-        dtype="float32",
-        device=device_index,
-    )
     sd.wait()
     samples = np.asarray(audio, dtype=np.float32).reshape(-1)
     if int(capture_rate) != int(settings.sample_rate):
@@ -169,10 +174,11 @@ def play_mono(audio: Any, settings: AudioSettings) -> None:
         except Exception as exc:
             last_error = exc
             if stream is not None:
-                try:
-                    stream.close()
-                except Exception:
-                    pass
+                with AUDIO_STREAM_LOCK:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
             if attempt < 2:
                 print(
                     f"Warning: translated audio output did not start on {detail}; "
@@ -183,7 +189,11 @@ def play_mono(audio: Any, settings: AudioSettings) -> None:
 
         try:
             stream.write(frames)
-            stream.stop()
+            # stop() and close() touch PortAudio like open does, so serialise
+            # them with other directions' opens. write() streams the audio and
+            # stays outside the lock so it never blocks another open.
+            with AUDIO_STREAM_LOCK:
+                stream.stop()
             return
         except Exception as exc:
             raise RuntimeError(
@@ -191,10 +201,11 @@ def play_mono(audio: Any, settings: AudioSettings) -> None:
                 "the phrase will not be replayed automatically."
             ) from exc
         finally:
-            try:
-                stream.close()
-            except Exception:
-                pass
+            with AUDIO_STREAM_LOCK:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
 
     selector = settings.output_device or "Windows default"
     raise RuntimeError(f"Could not play translated speech through '{selector}': {last_error}") from last_error

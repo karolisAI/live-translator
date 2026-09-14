@@ -189,6 +189,9 @@ class LocalTranslatorPipeline:
         failure sets the same event (it is the workers' stop_event), so the
         capture loop and workers wind down the same way in both cases.
         """
+        # Set before _print_audio_route so its lines carry the direction label
+        # too; _run_meeting sets it again (harmlessly) for the loopback path.
+        self._label = label
         self._verbose = verbose
         self._show_text = show_text
         self._print_audio_route()
@@ -239,7 +242,7 @@ class LocalTranslatorPipeline:
         self._announce_text_display()
         if self._verbose and chunker == "vad":
             print(
-                f"Chunker=vad silence={self._config.chunking.silence_ms}ms "
+                f"{self._line_prefix()}Chunker=vad silence={self._config.chunking.silence_ms}ms "
                 f"min={self._config.chunking.min_segment_seconds:.1f}s "
                 f"max={self._config.chunking.max_seconds:.1f}s "
                 f"input={self._config.audio.input_device or 'default'} "
@@ -247,7 +250,7 @@ class LocalTranslatorPipeline:
             )
         elif self._verbose and chunker == "rolling":
             print(
-                f"Chunker=rolling emit={self._config.chunking.rolling_window_seconds:.1f}s "
+                f"{self._line_prefix()}Chunker=rolling emit={self._config.chunking.rolling_window_seconds:.1f}s "
                 f"silence={self._config.chunking.silence_ms}ms "
                 f"max={self._config.chunking.max_seconds:.1f}s "
                 f"input={self._config.audio.input_device or 'default'} "
@@ -255,7 +258,7 @@ class LocalTranslatorPipeline:
             )
         elif self._verbose:
             print(
-                f"Chunker=fixed chunk={self._config.audio.chunk_seconds:.1f}s "
+                f"{self._line_prefix()}Chunker=fixed chunk={self._config.audio.chunk_seconds:.1f}s "
                 f"input={self._config.audio.input_device or 'default'} "
                 f"output={self._config.audio.output_device or 'default'}"
             )
@@ -334,7 +337,7 @@ class LocalTranslatorPipeline:
         if transcript is None:
             self._write_debug_note(debug_wav, "skipped", "")
             if self._verbose:
-                print(f"Segment {segment.number}: skipped in {perf_counter() - started:.2f}s")
+                print(f"{self._line_prefix()}Segment {segment.number}: skipped in {perf_counter() - started:.2f}s")
             return None
 
         translated = translator.translate(transcript.text)
@@ -353,7 +356,7 @@ class LocalTranslatorPipeline:
         if self._verbose:
             queue_seconds = max(0.0, started - segment.captured_at)
             print(
-                f"Segment {segment.number}: queue={queue_seconds:.2f}s "
+                f"{self._line_prefix()}Segment {segment.number}: queue={queue_seconds:.2f}s "
                 f"recognition+translation+synthesis={perf_counter() - started:.2f}s"
             )
         elif not self._show_text:
@@ -410,6 +413,7 @@ class LocalTranslatorPipeline:
             speaker.play,
             segment_queue_size=self._config.realtime.recognition_queue_size,
             playback_queue_size=self._config.realtime.playback_queue_size,
+            on_warning=lambda message: print(f"{self._line_prefix()}{message}"),
             stop_event=stop_event,
         )
 
@@ -492,7 +496,7 @@ class LocalTranslatorPipeline:
         """
         if self._show_text and not self._verbose:
             print(
-                "Showing transcripts and translations on screen. They remain in "
+                f"{self._line_prefix()}Showing transcripts and translations on screen. They remain in "
                 "the terminal scrollback and are visible on a screen share."
             )
 
@@ -521,7 +525,7 @@ class LocalTranslatorPipeline:
         reasons = ", ".join(result.rejection_reasons[:3])
         if len(result.rejection_reasons) > 3:
             reasons += ", ..."
-        print(f"ASR rejected {result.rejected_segments} low-confidence/no-speech segment(s): {reasons}")
+        print(f"{self._line_prefix()}ASR rejected {result.rejected_segments} low-confidence/no-speech segment(s): {reasons}")
 
     def _start_diagnostics(
         self, *, diagnostics: bool, debug_audio_dir: str | Path | None
@@ -650,9 +654,9 @@ class LocalTranslatorPipeline:
         )
 
     def _print_audio_route(self) -> None:
-        print("Audio routing:")
+        print(f"{self._line_prefix()}Audio routing:")
         print(
-            "  Physical microphone: "
+            f"{self._line_prefix()}  Physical microphone: "
             + describe_device_selection(
                 self._config.audio.input_device,
                 "input",
@@ -661,7 +665,7 @@ class LocalTranslatorPipeline:
         )
         if self._config.audio.output_device:
             print(
-                "  Translated output:  "
+                f"{self._line_prefix()}  Translated output:  "
                 + describe_device_selection(
                     self._config.audio.output_device,
                     "output",
@@ -670,7 +674,7 @@ class LocalTranslatorPipeline:
             )
         if self._config.audio.peer_input_device:
             print(
-                "  Meeting microphone: "
+                f"{self._line_prefix()}  Meeting microphone: "
                 + describe_device_selection(
                     self._config.audio.peer_input_device,
                     "input",

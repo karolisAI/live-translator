@@ -62,24 +62,26 @@ class BidirectionalSession:
             stop.set()
 
     def run(self) -> None:
-        # Prepared one at a time, not concurrently: model loading is heavy and
-        # its progress lines would interleave into noise. Only the live run
-        # needs to overlap.
-        for direction in self._directions:
-            direction.prepare()
-
-        for direction in self._directions:
-            thread = Thread(
-                target=self._supervise,
-                args=(direction,),
-                name=f"live-translator-direction-{direction.label}",
-                daemon=True,
-            )
-            self._threads.append(thread)
-            thread.start()
-
         interrupted = False
         try:
+            # Prepared one at a time, not concurrently: model loading is heavy
+            # and its progress lines would interleave into noise. Inside the try
+            # so that if a later prepare() raises, the finally below still closes
+            # the directions already prepared -- a resident Piper started by an
+            # earlier warm_up() would otherwise be orphaned.
+            for direction in self._directions:
+                direction.prepare()
+
+            for direction in self._directions:
+                thread = Thread(
+                    target=self._supervise,
+                    args=(direction,),
+                    name=f"live-translator-direction-{direction.label}",
+                    daemon=True,
+                )
+                self._threads.append(thread)
+                thread.start()
+
             # Wake either when the user interrupts (session stop set) or when the
             # last direction has exited on its own.
             while any(thread.is_alive() for thread in self._threads):

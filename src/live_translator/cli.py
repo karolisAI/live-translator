@@ -670,7 +670,34 @@ def cmd_converse(args: argparse.Namespace) -> int:
     # safe to trigger from there (single-direction mode never hit this because
     # it opens on the main thread).
     ensure_audio_ready()
-    BidirectionalSession(directions).run()
+    # Warn if both directions resolve to the same microphone: on one machine
+    # that means both chains capture the same audio (the inbound one then
+    # produces nonsense). Best-effort -- a genuine device error surfaces when
+    # the direction opens its stream.
+    try:
+        outbound_input = resolve_device_index(
+            outbound_config.audio.input_device, "input", role="physical_input"
+        )
+        inbound_input = resolve_device_index(
+            inbound_config.audio.input_device, "input", role="physical_input"
+        )
+        if outbound_input == inbound_input:
+            print(
+                "Warning: both directions resolve to the same input device, so each "
+                "will capture the same audio. Point the two profiles at different "
+                "microphones (their input_device)."
+            )
+    except Exception:
+        pass
+    # Give the session's thread-join enough room for each direction's own
+    # shutdown, which waits tts.piper_timeout_seconds + 5 (pipeline.py). A
+    # hardcoded join would return early when a profile raises that timeout and
+    # tear a still-closing direction's Piper down under it.
+    join_timeout = max(
+        outbound_config.tts.piper_timeout_seconds,
+        inbound_config.tts.piper_timeout_seconds,
+    ) + 10.0
+    BidirectionalSession(directions, join_timeout=join_timeout).run()
     return 0
 
 
