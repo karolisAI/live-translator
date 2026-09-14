@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from time import perf_counter
 
 from live_translator.asr import AsrEngine, TranscriptResult, create_asr
@@ -43,6 +43,10 @@ class LocalTranslatorPipeline:
         self._capture_limits: CaptureLimits | None = None
         self._capture_failure_warned = False
         self._show_text = False
+        self._label: str | None = None
+        """Prefix for this direction's printed lines, so two directions running
+        at once (see BidirectionalSession) read as separate columns. None in the
+        single-direction path, which prints unprefixed as before."""
 
     def prepare(self, *, include_tts: bool = True) -> None:
         started = perf_counter()
@@ -164,13 +168,60 @@ class LocalTranslatorPipeline:
             # by process count, not assumed.
             self._get_speaker().close()
 
+    def run_prepared(
+        self,
+        *,
+        stop_event: Event,
+        label: str | None = None,
+        chunker_mode: str | None = None,
+        debug_audio_dir: str | Path | None = None,
+        verbose: bool = False,
+        diagnostics: bool = False,
+        show_text: bool = False,
+    ) -> None:
+        """Run one direction's meeting loop until `stop_event` is set.
+
+        Unlike `loopback`, this assumes `prepare()` has already run and does not
+        close the speaker on the way out -- the caller (BidirectionalSession)
+        owns the model lifecycle so it can prepare several directions, run them
+        concurrently, and tear them all down together. `stop_event` is the one
+        knob that ends this direction: the caller sets it to stop, and a worker
+        failure sets the same event (it is the workers' stop_event), so the
+        capture loop and workers wind down the same way in both cases.
+        """
+        # Set before _print_audio_route so its lines carry the direction label
+        # too; _run_meeting sets it again (harmlessly) for the loopback path.
+        self._label = label
+        self._verbose = verbose
+        self._show_text = show_text
+        self._print_audio_route()
+        self._run_meeting(
+            chunker_mode,
+            debug_audio_dir,
+            diagnostics=diagnostics,
+            stop_event=stop_event,
+            label=label,
+        )
+
+    def close(self) -> None:
+        """Release this direction's resident speech process, if one was started.
+
+        Safe to call when nothing was prepared -- `_get_speaker()` is lazy, so
+        this only touches a speaker that actually exists.
+        """
+        if self._speaker is not None:
+            self._speaker.close()
+
     def _run_meeting(
         self,
         chunker_mode: str | None,
         debug_audio_dir: str | Path | None,
         *,
         diagnostics: bool,
+        stop_event: Event | None = None,
+        label: str | None = None,
     ) -> None:
+        self._label = label
         translator = self._get_translator()
         speaker = self._get_speaker()
         debug_dir = self._start_diagnostics(
@@ -186,12 +237,12 @@ class LocalTranslatorPipeline:
 
         source = self._config.translation.source_language.upper()
         target = self._config.translation.target_language.upper()
-        print(f"Direction: {source} -> {target}")
-        print("Live translation active. Listening continuously between phrases.")
+        print(f"{self._line_prefix()}Direction: {source} -> {target}")
+        print(f"{self._line_prefix()}Live translation active. Listening continuously between phrases.")
         self._announce_text_display()
         if self._verbose and chunker == "vad":
             print(
-                f"Chunker=vad silence={self._config.chunking.silence_ms}ms "
+                f"{self._line_prefix()}Chunker=vad silence={self._config.chunking.silence_ms}ms "
                 f"min={self._config.chunking.min_segment_seconds:.1f}s "
                 f"max={self._config.chunking.max_seconds:.1f}s "
                 f"input={self._config.audio.input_device or 'default'} "
@@ -199,7 +250,7 @@ class LocalTranslatorPipeline:
             )
         elif self._verbose and chunker == "rolling":
             print(
-                f"Chunker=rolling emit={self._config.chunking.rolling_window_seconds:.1f}s "
+                f"{self._line_prefix()}Chunker=rolling emit={self._config.chunking.rolling_window_seconds:.1f}s "
                 f"silence={self._config.chunking.silence_ms}ms "
                 f"max={self._config.chunking.max_seconds:.1f}s "
                 f"input={self._config.audio.input_device or 'default'} "
@@ -207,11 +258,11 @@ class LocalTranslatorPipeline:
             )
         elif self._verbose:
             print(
-                f"Chunker=fixed chunk={self._config.audio.chunk_seconds:.1f}s "
+                f"{self._line_prefix()}Chunker=fixed chunk={self._config.audio.chunk_seconds:.1f}s "
                 f"input={self._config.audio.input_device or 'default'} "
                 f"output={self._config.audio.output_device or 'default'}"
             )
-        workers = self._create_realtime_workers(translator, speaker, debug_dir)
+        workers = self._create_realtime_workers(translator, speaker, debug_dir, stop_event=stop_event)
         workers.start()
         interrupted = False
         try:
@@ -286,7 +337,7 @@ class LocalTranslatorPipeline:
         if transcript is None:
             self._write_debug_note(debug_wav, "skipped", "")
             if self._verbose:
-                print(f"Segment {segment.number}: skipped in {perf_counter() - started:.2f}s")
+                print(f"{self._line_prefix()}Segment {segment.number}: skipped in {perf_counter() - started:.2f}s")
             return None
 
         translated = translator.translate(transcript.text)
@@ -305,7 +356,7 @@ class LocalTranslatorPipeline:
         if self._verbose:
             queue_seconds = max(0.0, started - segment.captured_at)
             print(
-                f"Segment {segment.number}: queue={queue_seconds:.2f}s "
+                f"{self._line_prefix()}Segment {segment.number}: queue={queue_seconds:.2f}s "
                 f"recognition+translation+synthesis={perf_counter() - started:.2f}s"
             )
         elif not self._show_text:
@@ -354,13 +405,26 @@ class LocalTranslatorPipeline:
         translator: TranslationEngine,
         speaker: TtsSpeaker,
         debug_dir: Path | None,
+        *,
+        stop_event: Event | None = None,
     ) -> RealtimeMeetingWorkers:
         return RealtimeMeetingWorkers(
             lambda segment: self._process_live_segment(segment, translator, speaker, debug_dir),
             speaker.play,
             segment_queue_size=self._config.realtime.recognition_queue_size,
             playback_queue_size=self._config.realtime.playback_queue_size,
+            on_warning=lambda message: print(f"{self._line_prefix()}{message}"),
+            stop_event=stop_event,
         )
+
+    def _line_prefix(self) -> str:
+        """`"[EN->DE] "` when a direction is labelled, `""` otherwise.
+
+        Two directions running concurrently interleave their per-phrase output;
+        the prefix is what lets the reader tell which line each belongs to. The
+        single-direction path leaves the label unset and prints as before.
+        """
+        return f"[{self._label}] " if self._label else ""
 
     def _transcribe_audio_if_safe(self, audio) -> TranscriptResult | None:
         if not self._audio_passes_energy_gate(audio):
@@ -418,9 +482,10 @@ class LocalTranslatorPipeline:
         # deserves the same warning as someone reading the source line. See
         # asr.flag_log_prob_threshold.
         marker = " [low confidence]" if low_confidence else ""
+        prefix = self._line_prefix()
         print()
-        print(f"{source}{marker}: {source_text}")
-        print(f"{target}{marker}: {target_text}")
+        print(f"{prefix}{source}{marker}: {source_text}")
+        print(f"{prefix}{target}{marker}: {target_text}")
 
     def _announce_text_display(self) -> None:
         """Say once that the conversation will be on screen.
@@ -431,7 +496,7 @@ class LocalTranslatorPipeline:
         """
         if self._show_text and not self._verbose:
             print(
-                "Showing transcripts and translations on screen. They remain in "
+                f"{self._line_prefix()}Showing transcripts and translations on screen. They remain in "
                 "the terminal scrollback and are visible on a screen share."
             )
 
@@ -450,7 +515,7 @@ class LocalTranslatorPipeline:
         marker = "    low confidence" if low_confidence else ""
         audio_seconds = len(segment.audio) / self._config.audio.sample_rate
         print(
-            f"Phrase {segment.number:>3}    {audio_seconds:.1f}s    "
+            f"{self._line_prefix()}Phrase {segment.number:>3}    {audio_seconds:.1f}s    "
             f"ready in {elapsed_seconds:.1f}s{marker}"
         )
 
@@ -460,7 +525,7 @@ class LocalTranslatorPipeline:
         reasons = ", ".join(result.rejection_reasons[:3])
         if len(result.rejection_reasons) > 3:
             reasons += ", ..."
-        print(f"ASR rejected {result.rejected_segments} low-confidence/no-speech segment(s): {reasons}")
+        print(f"{self._line_prefix()}ASR rejected {result.rejected_segments} low-confidence/no-speech segment(s): {reasons}")
 
     def _start_diagnostics(
         self, *, diagnostics: bool, debug_audio_dir: str | Path | None
@@ -589,9 +654,9 @@ class LocalTranslatorPipeline:
         )
 
     def _print_audio_route(self) -> None:
-        print("Audio routing:")
+        print(f"{self._line_prefix()}Audio routing:")
         print(
-            "  Physical microphone: "
+            f"{self._line_prefix()}  Physical microphone: "
             + describe_device_selection(
                 self._config.audio.input_device,
                 "input",
@@ -600,7 +665,7 @@ class LocalTranslatorPipeline:
         )
         if self._config.audio.output_device:
             print(
-                "  Translated output:  "
+                f"{self._line_prefix()}  Translated output:  "
                 + describe_device_selection(
                     self._config.audio.output_device,
                     "output",
@@ -609,7 +674,7 @@ class LocalTranslatorPipeline:
             )
         if self._config.audio.peer_input_device:
             print(
-                "  Meeting microphone: "
+                f"{self._line_prefix()}  Meeting microphone: "
                 + describe_device_selection(
                     self._config.audio.peer_input_device,
                     "input",

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import sys
 import wave
+from contextlib import contextmanager
 from pathlib import Path
+from threading import Lock, local
 from time import sleep
 from typing import Any
 
@@ -13,6 +16,75 @@ from live_translator.config import AudioSettings
 from live_translator.errors import MissingDependency
 
 
+AUDIO_STREAM_LOCK = Lock()
+"""Serialises PortAudio stream opens across threads.
+
+PortAudio stream creation/start is not safe to run from two threads at the same
+time. A bidirectional session opens one capture stream per direction, each on
+its own thread, and each direction's playback worker opens output streams too,
+so without this two opens can race. Held only while opening a stream, never
+while it runs, so audio still flows concurrently once every stream is open.
+Single-direction mode never contends for it.
+"""
+
+_thread_com = local()
+
+
+def _ensure_thread_com() -> None:
+    """Initialise COM on the current thread once (Windows only).
+
+    PortAudio's WASAPI/MMDevice backend needs COM initialised on whichever
+    thread opens a stream. The main thread gets it from PortAudio's own init,
+    but a plain worker thread does not, so its first stream open fails -- on
+    Windows this surfaces as a WDM-KS `DeviceIoControl` error. A bidirectional
+    session opens every capture stream (and its playback streams) on worker
+    threads, so each must initialise COM first. Uses the multithreaded
+    apartment, which needs no message pump -- these threads only open a stream.
+    Never uninitialised on purpose: the threads live for the whole session, and
+    the process tears COM down on exit.
+    """
+    if sys.platform != "win32":
+        return
+    if getattr(_thread_com, "ready", False):
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.ole32.CoInitializeEx(None, 0x0)  # COINIT_MULTITHREADED
+    except Exception:
+        # An already-initialised thread (S_FALSE) or a different-apartment
+        # thread (RPC_E_CHANGED_MODE) is still usable; only record that we tried.
+        pass
+    _thread_com.ready = True
+
+
+@contextmanager
+def audio_open_guard():
+    """Wrap a PortAudio stream open: COM-ready thread, then a serialised open.
+
+    Every place that opens a capture or playback stream uses this, so an open
+    from any thread is both COM-initialised (see `_ensure_thread_com`) and
+    serialised against other opens (see `AUDIO_STREAM_LOCK`).
+    """
+    _ensure_thread_com()
+    with AUDIO_STREAM_LOCK:
+        yield
+
+
+def ensure_audio_ready() -> None:
+    """Initialise PortAudio on the calling thread; call once on the main thread.
+
+    PortAudio's first-time initialisation is not safe to trigger from the worker
+    threads that open each direction's stream. Single-direction mode never hit
+    this because it opens its first stream on the main thread; a bidirectional
+    session opens every stream on a worker thread, so it must force that first
+    initialisation here, up front, before starting them. Cheap and idempotent.
+    """
+    sd, _ = _audio_packages()
+    with AUDIO_STREAM_LOCK:
+        sd.query_devices()
+
+
 def record_mono(
     settings: AudioSettings,
     seconds: float | None = None,
@@ -21,22 +93,27 @@ def record_mono(
 ) -> Any:
     sd, np = _audio_packages()
     duration = seconds if seconds is not None else settings.chunk_seconds
-    device_index = resolve_device_index(settings.input_device, "input", role="physical_input")
-    capture_rate = _select_sample_rate(sd, device_index, "input", settings.sample_rate)
-    frames = int(capture_rate * duration)
+    # Guard the device probe and recording open like the streaming capture path,
+    # so fixed-mode capture also works from a worker thread (converse runs each
+    # direction off the main thread). sd.wait() blocks for the whole recording,
+    # so it stays outside the guard.
+    with audio_open_guard():
+        device_index = resolve_device_index(settings.input_device, "input", role="physical_input")
+        capture_rate = _select_sample_rate(sd, device_index, "input", settings.sample_rate)
+        frames = int(capture_rate * duration)
 
-    if announce:
-        print(
-            f"Recording {duration:.1f}s at {capture_rate} Hz"
-            f" from {settings.input_device or 'default input'}..."
+        if announce:
+            print(
+                f"Recording {duration:.1f}s at {capture_rate} Hz"
+                f" from {settings.input_device or 'default input'}..."
+            )
+        audio = sd.rec(
+            frames,
+            samplerate=capture_rate,
+            channels=1,
+            dtype="float32",
+            device=device_index,
         )
-    audio = sd.rec(
-        frames,
-        samplerate=capture_rate,
-        channels=1,
-        dtype="float32",
-        device=device_index,
-    )
     sd.wait()
     samples = np.asarray(audio, dtype=np.float32).reshape(-1)
     if int(capture_rate) != int(settings.sample_rate):
@@ -82,21 +159,26 @@ def play_mono(audio: Any, settings: AudioSettings) -> None:
     for attempt in range(3):
         stream = None
         try:
-            stream = sd.OutputStream(
-                samplerate=playback_rate,
-                channels=output_channels,
-                dtype="float32",
-                device=device_index,
-                latency="high",
-            )
-            stream.start()
+            # Only the open is guarded (COM-ready thread + serialised open); the
+            # write below streams the audio and must not block another
+            # direction's open for its whole duration.
+            with audio_open_guard():
+                stream = sd.OutputStream(
+                    samplerate=playback_rate,
+                    channels=output_channels,
+                    dtype="float32",
+                    device=device_index,
+                    latency="high",
+                )
+                stream.start()
         except Exception as exc:
             last_error = exc
             if stream is not None:
-                try:
-                    stream.close()
-                except Exception:
-                    pass
+                with AUDIO_STREAM_LOCK:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
             if attempt < 2:
                 print(
                     f"Warning: translated audio output did not start on {detail}; "
@@ -107,7 +189,11 @@ def play_mono(audio: Any, settings: AudioSettings) -> None:
 
         try:
             stream.write(frames)
-            stream.stop()
+            # stop() and close() touch PortAudio like open does, so serialise
+            # them with other directions' opens. write() streams the audio and
+            # stays outside the lock so it never blocks another open.
+            with AUDIO_STREAM_LOCK:
+                stream.stop()
             return
         except Exception as exc:
             raise RuntimeError(
@@ -115,10 +201,11 @@ def play_mono(audio: Any, settings: AudioSettings) -> None:
                 "the phrase will not be replayed automatically."
             ) from exc
         finally:
-            try:
-                stream.close()
-            except Exception:
-                pass
+            with AUDIO_STREAM_LOCK:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
 
     selector = settings.output_device or "Windows default"
     raise RuntimeError(f"Could not play translated speech through '{selector}': {last_error}") from last_error

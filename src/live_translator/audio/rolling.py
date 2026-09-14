@@ -8,7 +8,13 @@ from time import monotonic
 from typing import Any
 
 from live_translator.audio.devices import resolve_device_index
-from live_translator.audio.io import _apply_input_gain, _audio_packages, _resample_audio, _select_sample_rate
+from live_translator.audio.io import (
+    _apply_input_gain,
+    _audio_packages,
+    _resample_audio,
+    _select_sample_rate,
+    audio_open_guard,
+)
 from live_translator.config import AudioSettings, ChunkingSettings
 
 
@@ -26,12 +32,16 @@ class RollingSpeechChunker:
         self._verbose = verbose
         self._emit_while_speaking = emit_while_speaking
         self._sd, self._np = _audio_packages()
-        self._device_index = resolve_device_index(
-            settings.input_device,
-            "input",
-            role="physical_input",
-        )
-        self._capture_rate = _select_sample_rate(self._sd, self._device_index, "input", settings.sample_rate)
+        # Device probing touches PortAudio; guard it like the stream open in
+        # __enter__ so it runs COM-ready and doesn't race another direction
+        # setting up at the same time (see audio_open_guard).
+        with audio_open_guard():
+            self._device_index = resolve_device_index(
+                settings.input_device,
+                "input",
+                role="physical_input",
+            )
+            self._capture_rate = _select_sample_rate(self._sd, self._device_index, "input", settings.sample_rate)
         self._frame_samples = max(1, int(self._capture_rate * chunking.frame_ms / 1000.0))
         emit_seconds = (
             chunking.rolling_window_seconds if emit_while_speaking else chunking.min_segment_seconds
@@ -61,15 +71,16 @@ class RollingSpeechChunker:
         self._stream = None
 
     def __enter__(self) -> "RollingSpeechChunker":
-        self._stream = self._sd.InputStream(
-            samplerate=self._capture_rate,
-            channels=1,
-            dtype="float32",
-            device=self._device_index,
-            blocksize=self._frame_samples,
-            callback=self._callback,
-        )
-        self._stream.__enter__()
+        with audio_open_guard():
+            self._stream = self._sd.InputStream(
+                samplerate=self._capture_rate,
+                channels=1,
+                dtype="float32",
+                device=self._device_index,
+                blocksize=self._frame_samples,
+                callback=self._callback,
+            )
+            self._stream.__enter__()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:

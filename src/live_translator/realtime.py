@@ -34,10 +34,15 @@ class RealtimeMeetingWorkers:
         segment_queue_size: int = 8,
         playback_queue_size: int = 8,
         on_warning: Callable[[str], None] = print,
+        stop_event: Event | None = None,
     ) -> None:
         if segment_queue_size <= 0 or playback_queue_size <= 0:
             raise ValueError("Realtime queue sizes must be positive")
-        self.stop_event = Event()
+        # An injected event lets a caller running several worker sets (one per
+        # translation direction) stop each one independently, and lets a worker
+        # failure here set the same event the caller's capture loop waits on.
+        # Left unset, each set owns a private event, matching single-direction use.
+        self.stop_event = stop_event if stop_event is not None else Event()
         self._process_segment = process_segment
         self._speak = speak
         self._on_warning = on_warning
