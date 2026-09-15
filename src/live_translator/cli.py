@@ -31,6 +31,7 @@ from live_translator.pipeline import LocalTranslatorPipeline
 from live_translator.profiles import SUPPORTED_DIRECTIONS, prompt_for_device, write_meeting_profile
 from live_translator.runtime import default_profile_path
 from live_translator.tts import TtsSpeaker
+from live_translator.tts.voices import voice_model
 
 TRANSLATION_ENGINES = ("identity", "argos")
 TTS_ENGINES = ("none", "pyttsx3", "piper")
@@ -96,6 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="capture to this directory instead of the default one; implies --diagnostics",
     )
     meeting.add_argument("--verbose", action="store_true", help="show audio gates and per-segment timings")
+    add_tts_options(meeting)
     add_chunker_options(meeting)
     meeting.set_defaults(func=cmd_meeting)
 
@@ -237,6 +239,10 @@ def add_language_options(parser: argparse.ArgumentParser) -> None:
 
 
 def add_tts_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--voice", choices=("male", "female"), default=None,
+        help="select a bundled Piper voice for the translation target language (en/de)",
+    )
     parser.add_argument("--tts-engine", choices=TTS_ENGINES, default=None)
     parser.add_argument("--tts-voice", default=None, help="TTS voice name or partial voice identifier")
     parser.add_argument("--tts-model", default=None, help="Piper .onnx voice model path")
@@ -641,7 +647,17 @@ def build_config(args: argparse.Namespace):
     if config_path is None and getattr(args, "use_default_profile", False):
         config_path = default_profile_path()
     config = load_config(config_path)
-    return apply_cli_overrides(
+    tts_model = getattr(args, "tts_model", None)
+    voice = getattr(args, "voice", None)
+    if voice is not None:
+        if tts_model is not None or getattr(args, "tts_voice", None) is not None:
+            raise ValueError("Use --voice or --tts-model/--tts-voice, not both.")
+        tts_engine = getattr(args, "tts_engine", None) or config.tts.engine
+        if tts_engine.lower() not in {"piper", "piper-cli"}:
+            raise ValueError("--voice requires the Piper TTS engine; use --tts-engine piper.")
+        target_language = getattr(args, "target_language", None) or config.translation.target_language
+        tts_model = voice_model(target_language, voice)
+    config = apply_cli_overrides(
         config,
         seconds=getattr(args, "seconds", None),
         input_device=getattr(args, "input_device", None),
@@ -654,7 +670,7 @@ def build_config(args: argparse.Namespace):
         translation_engine=getattr(args, "translation_engine", None),
         tts_engine=getattr(args, "tts_engine", None),
         tts_voice=getattr(args, "tts_voice", None),
-        tts_model_path=getattr(args, "tts_model", None),
+        tts_model_path=tts_model,
         piper_exe=getattr(args, "piper_exe", None),
         tts_length_scale=getattr(args, "tts_length_scale", None),
         piper_timeout_seconds=getattr(args, "piper_timeout", None),
@@ -669,3 +685,4 @@ def build_config(args: argparse.Namespace):
         max_seconds=getattr(args, "max_seconds", None),
         rolling_window_seconds=getattr(args, "rolling_window_seconds", None),
     )
+    return config

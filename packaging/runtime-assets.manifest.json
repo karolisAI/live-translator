@@ -2925,6 +2925,38 @@
       "source": "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip"
     },
     {
+      "path": "models/tts/de_DE-kerstin-low.onnx",
+      "sha256": "d352a7641892cebf2903859af94e9ba81a141110215fe3943bcda7f7da401b7a",
+      "size": 63104526,
+      "component": "piper-voice",
+      "version": "39ab474be869e9181350af6a65e4953eef67aaa0",
+      "source": "https://huggingface.co/rhasspy/piper-voices/resolve/39ab474be869e9181350af6a65e4953eef67aaa0/de/de_DE/kerstin/low/de_DE-kerstin-low.onnx"
+    },
+    {
+      "path": "models/tts/de_DE-kerstin-low.onnx.json",
+      "sha256": "56e708556b7b9b7a53c4f8957e021421e69f11a600962bba554cffbe72cf2d47",
+      "size": 4158,
+      "component": "piper-voice",
+      "version": "39ab474be869e9181350af6a65e4953eef67aaa0",
+      "source": "https://huggingface.co/rhasspy/piper-voices/resolve/39ab474be869e9181350af6a65e4953eef67aaa0/de/de_DE/kerstin/low/de_DE-kerstin-low.onnx.json"
+    },
+    {
+      "path": "models/tts/en_US-hfc_female-medium.onnx",
+      "sha256": "914c473788fc1fa8b63ace1cdcdb44588f4ae523d3ab37df1536616835a140b7",
+      "size": 63201294,
+      "component": "piper-voice",
+      "version": "39ab474be869e9181350af6a65e4953eef67aaa0",
+      "source": "https://huggingface.co/rhasspy/piper-voices/resolve/39ab474be869e9181350af6a65e4953eef67aaa0/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx"
+    },
+    {
+      "path": "models/tts/en_US-hfc_female-medium.onnx.json",
+      "sha256": "03f1fa0622b80463283592d97aca9f6e89aec345a5c56b7257723e0093c58b6c",
+      "size": 5033,
+      "component": "piper-voice",
+      "version": "39ab474be869e9181350af6a65e4953eef67aaa0",
+      "source": "https://huggingface.co/rhasspy/piper-voices/resolve/39ab474be869e9181350af6a65e4953eef67aaa0/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx.json"
+    },
+    {
       "path": "models/tts/de_DE-thorsten-medium.onnx",
       "sha256": "7e64762d8e5118bb578f2eea6207e1a35a8e0c30595010b666f983fc87bb7819",
       "size": 63201294,
