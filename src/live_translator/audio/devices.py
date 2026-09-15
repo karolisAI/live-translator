@@ -8,7 +8,13 @@ from live_translator.errors import MissingDependency
 
 
 DeviceKind = Literal["input", "output"]
-DeviceRole = Literal["physical_input", "translated_output", "meeting_input", "remote_input"]
+DeviceRole = Literal[
+    "physical_input",
+    "translated_output",
+    "meeting_input",
+    "remote_input",
+    "headset_output",
+]
 
 
 @dataclass(frozen=True)
@@ -125,12 +131,13 @@ def _resolve_automatic_device(
         "translated_output": "output",
         "meeting_input": "input",
         "remote_input": "input",
+        "headset_output": "output",
     }
     if expected_kind[role] != kind:
         raise ValueError(f"Automatic device role '{role}' cannot be used for a {kind} device.")
 
-    if role == "physical_input":
-        return _resolve_default_microphone(candidates)
+    if role in ("physical_input", "headset_output"):
+        return _resolve_default_physical_device(candidates, kind)
 
     if role == "remote_input":
         return _resolve_remote_cable_input().index
@@ -139,11 +146,38 @@ def _resolve_automatic_device(
     return output_device.index if role == "translated_output" else input_device.index
 
 
-def _resolve_default_microphone(candidates: list[AudioDevice]) -> int:
+_NO_DEFAULT_DEVICE: dict[DeviceKind, str] = {
+    "input": (
+        "Windows has no default input device. Set a default microphone in Sound settings "
+        "or provide an explicit audio.input_device."
+    ),
+    "output": (
+        "Windows has no default output device. Set your headset or speakers as the default "
+        "in Sound settings or provide an explicit audio.output_device."
+    ),
+}
+
+_VIRTUAL_DEFAULT_DEVICE: dict[DeviceKind, str] = {
+    "input": (
+        "Windows default input '{name}' is virtual. Set the physical microphone "
+        "as the Windows default input or provide an explicit audio.input_device."
+    ),
+    # Inbound translated speech is played here, so a virtual device would feed
+    # it straight back into the meeting instead of the user's ears.
+    "output": (
+        "Windows default output '{name}' is virtual. Set your headset or speakers "
+        "as the Windows default output, so translated speech is not played into the "
+        "meeting, or provide an explicit audio.output_device."
+    ),
+}
+
+
+def _resolve_default_physical_device(candidates: list[AudioDevice], kind: DeviceKind) -> int:
+    """Windows' default microphone (input) or headset/speakers (output), never a virtual device."""
     sd = _sounddevice()
     default = sd.default.device
     try:
-        default_index = default[0]
+        default_index = default[0 if kind == "input" else 1]
     except (TypeError, IndexError):
         default_index = default
     try:
@@ -153,15 +187,9 @@ def _resolve_default_microphone(candidates: list[AudioDevice]) -> int:
 
     selected = next((device for device in candidates if device.index == default_index), None)
     if selected is None:
-        raise ValueError(
-            "Windows has no default input device. Set a default microphone in Sound settings "
-            "or provide an explicit audio.input_device."
-        )
+        raise ValueError(_NO_DEFAULT_DEVICE[kind])
     if _is_virtual_audio_device(selected.name):
-        raise ValueError(
-            f"Windows default input '{selected.name}' is virtual. Set the physical microphone "
-            "as the Windows default input or provide an explicit audio.input_device."
-        )
+        raise ValueError(_VIRTUAL_DEFAULT_DEVICE[kind].format(name=selected.name))
 
     same_endpoint = [
         device
@@ -278,6 +306,8 @@ def _is_virtual_audio_device(name: str) -> bool:
     upper = name.upper()
     return (
         "VB-AUDIO" in upper
+        # VBMatrix Point endpoints are named "Input (VBMatrix Point 2)", without "VB-Audio".
+        or "VBMATRIX" in upper
         or "VIRTUAL CABLE" in upper
         or upper.startswith("CABLE-")
         or upper.startswith("CABLE ")

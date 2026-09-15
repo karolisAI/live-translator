@@ -38,8 +38,8 @@ def _output_device(
     )
 
 
-def _default_sounddevice(input_index: int) -> SimpleNamespace:
-    return SimpleNamespace(default=SimpleNamespace(device=(input_index, -1)))
+def _default_sounddevice(input_index: int, output_index: int = -1) -> SimpleNamespace:
+    return SimpleNamespace(default=SimpleNamespace(device=(input_index, output_index)))
 
 
 def _inventory(
@@ -277,6 +277,57 @@ class AudioDeviceSelectionTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "No complete standard VB-CABLE"):
                 resolve_device_index("auto", "input", role="meeting_input")
+
+    def test_auto_headset_output_maps_windows_default_to_its_wasapi_endpoint(self) -> None:
+        devices = [
+            _output_device(7, "CABLE Input (VB-Audio Virtual Cable)"),
+            _output_device(3, "Headphones (Jabra Evolve2 65)", "MME"),
+            _output_device(44, "Speakers (AMD Audio Device)"),
+            _output_device(40, "Headphones (Jabra Evolve2 65)"),
+        ]
+
+        with (
+            patch("live_translator.audio.devices.list_devices", return_value=devices),
+            patch(
+                "live_translator.audio.devices._sounddevice",
+                return_value=_default_sounddevice(-1, output_index=3),
+            ),
+        ):
+            selected = resolve_device_index("auto", "output", role="headset_output")
+
+        self.assertEqual(selected, 40)
+
+    def test_auto_headset_output_rejects_a_virtual_default_output(self) -> None:
+        virtual_defaults = {
+            "vb-cable": _output_device(7, "CABLE Input (VB-Audio Virtual Cable)"),
+            "vbmatrix point": _output_device(8, "Input (VBMatrix Point 2)"),
+        }
+
+        for label, virtual in virtual_defaults.items():
+            devices = [virtual, _output_device(40, "Headphones (Jabra Evolve2 65)")]
+            with (
+                self.subTest(label),
+                patch("live_translator.audio.devices.list_devices", return_value=devices),
+                patch(
+                    "live_translator.audio.devices._sounddevice",
+                    return_value=_default_sounddevice(-1, output_index=virtual.index),
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "default output .* is virtual"):
+                    resolve_device_index("auto", "output", role="headset_output")
+
+    def test_auto_headset_output_requires_a_default_output(self) -> None:
+        devices = [_output_device(40, "Headphones (Jabra Evolve2 65)")]
+
+        with (
+            patch("live_translator.audio.devices.list_devices", return_value=devices),
+            patch(
+                "live_translator.audio.devices._sounddevice",
+                return_value=_default_sounddevice(-1, output_index=-1),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "no default output device"):
+                resolve_device_index("auto", "output", role="headset_output")
 
     def test_auto_input_without_role_defaults_to_physical_input(self) -> None:
         devices = [_input_device(30, "Microphone (USB Headset)")]
