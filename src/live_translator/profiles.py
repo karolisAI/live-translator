@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from live_translator.audio.devices import AudioDevice, list_devices
+from live_translator.config import AppConfig, validate_config
 from live_translator.defaults import DEFAULT_ASR_ENGINE, DEFAULT_ASR_MODEL
 from live_translator.errors import MissingDependency
 from live_translator.runtime import default_profile_path
@@ -25,6 +27,49 @@ DIRECTION_SETTINGS: dict[str, dict[str, Any]] = {
         "tts_model": "models/tts/en_US-hfc_male-medium.onnx",
     },
 }
+
+INBOUND_TARGET_LANGUAGE = "en"
+
+
+def inbound_config(outbound: AppConfig, their_language: str | None = None) -> AppConfig:
+    """The inbound direction's config: the outbound direction with languages reversed.
+
+    The remote party speaks `their_language` (by default, the language the
+    outbound direction translates into) and the user hears English. So speech
+    recognition and translation both read their language, translation writes
+    English, and Piper uses the English voice for that direction.
+
+    Engines, model, thread count, chunking and queue settings are copied from the
+    outbound config, so both directions run the same stack. The audio section is
+    copied unchanged: the inbound capture and headset devices are wired
+    separately and must be set before this config is run.
+    """
+    language = (their_language or outbound.translation.target_language).lower()
+    direction = f"{language}-{INBOUND_TARGET_LANGUAGE}"
+    if direction not in DIRECTION_SETTINGS:
+        supported = ", ".join(
+            name.split("-")[0]
+            for name in SUPPORTED_DIRECTIONS
+            if name.endswith(f"-{INBOUND_TARGET_LANGUAGE}")
+        )
+        raise ValueError(
+            f"Unsupported remote language '{language}' for the inbound direction. "
+            f"Use one of: {supported}"
+        )
+
+    settings = DIRECTION_SETTINGS[direction]
+    inbound = replace(
+        outbound,
+        asr=replace(outbound.asr, source_language=settings["asr_language"]),
+        translation=replace(
+            outbound.translation,
+            source_language=settings["source_language"],
+            target_language=settings["target_language"],
+        ),
+        tts=replace(outbound.tts, model_path=settings["tts_model"]),
+    )
+    validate_config(inbound)
+    return inbound
 
 
 def write_meeting_profile(

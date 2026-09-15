@@ -10,7 +10,7 @@ from live_translator.config import (
     load_config,
 )
 from live_translator.defaults import DEFAULT_ASR_ENGINE, DEFAULT_ASR_MODEL
-from live_translator.profiles import write_meeting_profile
+from live_translator.profiles import inbound_config, write_meeting_profile
 
 
 class DefaultModelTests(unittest.TestCase):
@@ -361,6 +361,55 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.realtime.recognition_queue_size, 2)
         self.assertEqual(config.realtime.playback_queue_size, 1)
         self.assertEqual(config.asr.log_prob_threshold, -1.3)
+
+    def _outbound_en_de_profile(self) -> AppConfig:
+        with TemporaryDirectory() as temp_dir:
+            profile_path = write_meeting_profile(
+                path=Path(temp_dir) / "outbound.yaml",
+                direction="en-de",
+                microphone_device="Microphone",
+                translated_output_device="CABLE-A Input",
+                meeting_microphone_device="CABLE-A Output",
+            )
+            return load_config(profile_path)
+
+    def test_inbound_config_reverses_languages_and_uses_english_voice(self) -> None:
+        outbound = self._outbound_en_de_profile()
+
+        inbound = inbound_config(outbound)
+
+        self.assertEqual(inbound.asr.source_language, "de")
+        self.assertEqual(inbound.translation.source_language, "de")
+        self.assertEqual(inbound.translation.target_language, "en")
+        self.assertEqual(inbound.tts.model_path, "models/tts/en_US-hfc_male-medium.onnx")
+        # Same stack as the outbound direction, only the languages and voice differ.
+        self.assertEqual(inbound.asr.model, outbound.asr.model)
+        self.assertEqual(inbound.asr.cpu_threads, outbound.asr.cpu_threads)
+        self.assertEqual(inbound.translation.engine, outbound.translation.engine)
+        self.assertEqual(inbound.tts.engine, outbound.tts.engine)
+        self.assertEqual(inbound.tts.piper_exe, outbound.tts.piper_exe)
+        self.assertEqual(inbound.chunking, outbound.chunking)
+        self.assertEqual(inbound.realtime, outbound.realtime)
+        self.assertEqual(inbound.diagnostics, outbound.diagnostics)
+        # The outbound config is left untouched.
+        self.assertEqual(outbound.translation.source_language, "en")
+        self.assertEqual(outbound.translation.target_language, "de")
+        self.assertEqual(outbound.tts.model_path, "models/tts/de_DE-thorsten-medium.onnx")
+
+    def test_inbound_config_accepts_an_explicit_remote_language(self) -> None:
+        inbound = inbound_config(self._outbound_en_de_profile(), their_language="DE")
+
+        self.assertEqual(inbound.asr.source_language, "de")
+        self.assertEqual(inbound.translation.source_language, "de")
+        self.assertEqual(inbound.translation.target_language, "en")
+
+    def test_inbound_config_rejects_an_unsupported_remote_language(self) -> None:
+        outbound = self._outbound_en_de_profile()
+
+        for language in ("fr", "en"):
+            with self.subTest(language=language):
+                with self.assertRaisesRegex(ValueError, "Unsupported remote language"):
+                    inbound_config(outbound, their_language=language)
 
     def test_loads_realtime_queue_sizes(self) -> None:
         with TemporaryDirectory() as temp_dir:
