@@ -1,11 +1,13 @@
 import subprocess
 import sys
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import numpy as np
 
-from live_translator.audio.io import _resample_audio, play_mono
+from live_translator.audio.io import _resample_audio, play_mono, read_wav_mono, write_wav
 from live_translator.config import AudioSettings
 
 
@@ -141,6 +143,19 @@ print('sounddevice' in sys.modules)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "False")
+
+    def test_wav_files_read_and_write_without_an_audio_stack(self) -> None:
+        """Reading and writing a WAV only needs numpy. Diagnostics capture writes
+        through write_wav and catches OSError, so while it pulled in sounddevice a
+        machine without PortAudio (the Linux CI runners) silently captured nothing."""
+        with TemporaryDirectory() as temp_dir, patch.dict(sys.modules, {"sounddevice": None}):
+            path = Path(temp_dir) / "clip.wav"
+            write_wav(path, np.full(1600, 0.25, dtype=np.float32), 16000)
+            samples, sample_rate = read_wav_mono(path)
+
+        self.assertEqual(sample_rate, 16000)
+        self.assertEqual(len(samples), 1600)
+        self.assertAlmostEqual(float(samples[0]), 0.25, places=3)
 
 
 if __name__ == "__main__":
