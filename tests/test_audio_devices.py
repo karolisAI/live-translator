@@ -201,6 +201,83 @@ class AudioDeviceSelectionTests(unittest.TestCase):
         self.assertEqual(translated, 7)
         self.assertEqual(meeting, 8)
 
+    def test_auto_remote_input_selects_cable_b_recording_endpoint(self) -> None:
+        output_devices = [
+            _output_device(26, "CABLE-A Input (VB-Audio Virtual Cable A)"),
+            _output_device(24, "CABLE-B Input (VB-Audio Virtual Cable B)"),
+        ]
+        input_devices = [
+            _input_device(33, "CABLE-A Output (VB-Audio Virtual Cable A)"),
+            _input_device(5, "CABLE-B Output (VB-Audio Virtual Cable B)", "MME"),
+            _input_device(31, "CABLE-B Output (VB-Audio Virtual Cable B)"),
+        ]
+
+        inventory = _inventory(inputs=input_devices, outputs=output_devices)
+        with patch("live_translator.audio.devices.list_devices", side_effect=inventory):
+            remote = resolve_device_index("auto", "input", role="remote_input")
+        with patch("live_translator.audio.devices.list_devices", side_effect=inventory):
+            meeting = resolve_device_index("auto", "input", role="meeting_input")
+
+        self.assertEqual(remote, 31)
+        self.assertEqual(meeting, 33)
+
+    def test_auto_remote_input_leaves_unlettered_cable_for_outbound(self) -> None:
+        output_devices = [
+            _output_device(7, "CABLE Input (VB-Audio Virtual Cable)"),
+            _output_device(24, "CABLE-B Input (VB-Audio Virtual Cable B)"),
+        ]
+        input_devices = [
+            _input_device(8, "CABLE Output (VB-Audio Virtual Cable)"),
+            _input_device(31, "CABLE-B Output (VB-Audio Virtual Cable B)"),
+        ]
+
+        inventory = _inventory(inputs=input_devices, outputs=output_devices)
+        with patch("live_translator.audio.devices.list_devices", side_effect=inventory):
+            remote = resolve_device_index("auto", "input", role="remote_input")
+        with patch("live_translator.audio.devices.list_devices", side_effect=inventory):
+            translated = resolve_device_index("auto", "output", role="translated_output")
+
+        self.assertEqual(remote, 31)
+        self.assertEqual(translated, 7)
+
+    def test_auto_remote_input_requires_a_second_cable(self) -> None:
+        single_cable_inventories = {
+            "unlettered only": (
+                [_input_device(8, "CABLE Output (VB-Audio Virtual Cable)")],
+                [_output_device(7, "CABLE Input (VB-Audio Virtual Cable)")],
+            ),
+            # With no other pair, the outbound direction already falls back to
+            # CABLE-B, so the inbound direction must not share it.
+            "cable B only": (
+                [_input_device(31, "CABLE-B Output (VB-Audio Virtual Cable B)")],
+                [_output_device(24, "CABLE-B Input (VB-Audio Virtual Cable B)")],
+            ),
+        }
+
+        for label, (inputs, outputs) in single_cable_inventories.items():
+            with (
+                self.subTest(label),
+                patch(
+                    "live_translator.audio.devices.list_devices",
+                    side_effect=_inventory(inputs=inputs, outputs=outputs),
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "second virtual cable"):
+                    resolve_device_index("auto", "input", role="remote_input")
+
+    def test_unlettered_vb_audio_point_is_not_a_cable_endpoint(self) -> None:
+        # VBMatrix names this endpoint without a trailing letter, so it has no
+        # space after "Point"; it must still not complete the default cable pair.
+        output_devices = [_output_device(7, "CABLE Input (VB-Audio Virtual Cable)")]
+        input_devices = [_input_device(92, "CABLE Output (VB-Audio Point)", "Windows WDM-KS")]
+
+        with patch(
+            "live_translator.audio.devices.list_devices",
+            side_effect=_inventory(inputs=input_devices, outputs=output_devices),
+        ):
+            with self.assertRaisesRegex(ValueError, "No complete standard VB-CABLE"):
+                resolve_device_index("auto", "input", role="meeting_input")
+
     def test_auto_input_without_role_defaults_to_physical_input(self) -> None:
         devices = [_input_device(30, "Microphone (USB Headset)")]
 

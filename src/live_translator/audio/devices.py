@@ -8,7 +8,7 @@ from live_translator.errors import MissingDependency
 
 
 DeviceKind = Literal["input", "output"]
-DeviceRole = Literal["physical_input", "translated_output", "meeting_input"]
+DeviceRole = Literal["physical_input", "translated_output", "meeting_input", "remote_input"]
 
 
 @dataclass(frozen=True)
@@ -124,12 +124,16 @@ def _resolve_automatic_device(
         "physical_input": "input",
         "translated_output": "output",
         "meeting_input": "input",
+        "remote_input": "input",
     }
     if expected_kind[role] != kind:
         raise ValueError(f"Automatic device role '{role}' cannot be used for a {kind} device.")
 
     if role == "physical_input":
         return _resolve_default_microphone(candidates)
+
+    if role == "remote_input":
+        return _resolve_remote_cable_input().index
 
     output_device, input_device = _resolve_virtual_cable_pair()
     return output_device.index if role == "translated_output" else input_device.index
@@ -168,15 +172,18 @@ def _resolve_default_microphone(candidates: list[AudioDevice]) -> int:
     return _preferred_device(same_endpoint or [selected]).index
 
 
+_OUTBOUND_CABLE_PRIORITY = ("a", "default", "b")
+_REMOTE_CABLE_IDENTITY = "b"
+
+
 def _resolve_virtual_cable_pair() -> tuple[AudioDevice, AudioDevice]:
+    """The outbound pair: translated speech plays into it, the meeting records it."""
     outputs = _standard_cable_devices(list_devices("output"), "output")
     inputs = _standard_cable_devices(list_devices("input"), "input")
 
-    for identity in ("a", "default", "b"):
-        matching_outputs = [device for device, cable in outputs if cable == identity]
-        matching_inputs = [device for device, cable in inputs if cable == identity]
-        if matching_outputs and matching_inputs:
-            return _preferred_device(matching_outputs), _preferred_device(matching_inputs)
+    pairs = _complete_cable_pairs(outputs, inputs)
+    if pairs:
+        return next(iter(pairs.values()))
 
     available_outputs = ", ".join(sorted({cable for _, cable in outputs})) or "none"
     available_inputs = ", ".join(sorted({cable for _, cable in inputs})) or "none"
@@ -185,6 +192,44 @@ def _resolve_virtual_cable_pair() -> tuple[AudioDevice, AudioDevice]:
         f"(playback identities: {available_outputs}; recording identities: {available_inputs}). "
         "Install or enable both CABLE Input and its matching CABLE Output."
     )
+
+
+def _resolve_remote_cable_input() -> AudioDevice:
+    """Recording end of the second cable, which carries the remote party's audio.
+
+    The meeting app's speaker is routed into CABLE-B, so its recording endpoint
+    is the inbound direction's source. It is only valid while a different pair
+    is left for the outbound direction; otherwise both directions would share
+    one cable and each would capture the other's audio.
+    """
+    outputs = _standard_cable_devices(list_devices("output"), "output")
+    inputs = _standard_cable_devices(list_devices("input"), "input")
+
+    pairs = _complete_cable_pairs(outputs, inputs)
+    remote = pairs.get(_REMOTE_CABLE_IDENTITY)
+    outbound_identity = next(iter(pairs), None)
+    if remote is None or outbound_identity == _REMOTE_CABLE_IDENTITY:
+        found = ", ".join(pairs) or "none"
+        raise ValueError(
+            "The inbound direction needs a second virtual cable: a complete CABLE-B pair "
+            f"alongside the outbound CABLE-A or CABLE pair (complete pairs found: {found}). "
+            "Install VB-CABLE A+B and route the meeting app's speaker to CABLE-B Input."
+        )
+    return remote[1]
+
+
+def _complete_cable_pairs(
+    outputs: list[tuple[AudioDevice, str]],
+    inputs: list[tuple[AudioDevice, str]],
+) -> dict[str, tuple[AudioDevice, AudioDevice]]:
+    """Complete (playback, recording) pairs by identity, in outbound priority order."""
+    pairs: dict[str, tuple[AudioDevice, AudioDevice]] = {}
+    for identity in _OUTBOUND_CABLE_PRIORITY:
+        matching_outputs = [device for device, cable in outputs if cable == identity]
+        matching_inputs = [device for device, cable in inputs if cable == identity]
+        if matching_outputs and matching_inputs:
+            pairs[identity] = (_preferred_device(matching_outputs), _preferred_device(matching_inputs))
+    return pairs
 
 
 def _standard_cable_devices(
@@ -196,7 +241,9 @@ def _standard_cable_devices(
     pattern = re.compile(r"^CABLE(?:-([AB]))?\s+(INPUT|OUTPUT)\b", re.IGNORECASE)
     for device in devices:
         upper = device.name.upper()
-        if "16CH" in upper or "POINT " in upper:
+        # VBMatrix exposes "CABLE Output (VB-Audio Point)" as well as lettered
+        # "(VB-Audio Point A)" names, so match the product name, not "POINT ".
+        if "16CH" in upper or "VB-AUDIO POINT" in upper:
             continue
         match = pattern.match(device.name)
         if not match or match.group(2).lower() != expected_endpoint:
