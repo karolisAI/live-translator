@@ -132,6 +132,17 @@ def build_parser() -> argparse.ArgumentParser:
         "model directory, without downloading; translation and voice are "
         "checked by any profile validation",
     )
+    doctor.add_argument(
+        "--inbound",
+        action="store_true",
+        help="also check the inbound direction converse derives from this profile: "
+        "second cable in, headset out, feedback-loop guard, translation and voice",
+    )
+    doctor.add_argument(
+        "--their-language",
+        default=None,
+        help="remote party's language for --inbound (default: the profile's target language)",
+    )
     doctor.set_defaults(func=cmd_doctor)
 
     prepare = subparsers.add_parser(
@@ -357,6 +368,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "--prepare-models needs a profile to know which model to check; "
             "pass --profile <name> or --config <path>."
         )
+    inbound = getattr(args, "inbound", False)
+    if inbound and config_path is None:
+        raise ValueError(
+            "--inbound needs a profile to derive the inbound direction from; "
+            "pass --profile <name> or --config <path>."
+        )
 
     checks = [
         ("numpy", "audio arrays", True),
@@ -382,6 +399,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         config_ok = _print_config_checks(
             load_config(config_path),
             prepare_models=args.prepare_models,
+            inbound=inbound,
+            their_language=getattr(args, "their_language", None),
         )
     if missing_required:
         print("Install required packages with: python -m pip install -e .")
@@ -399,7 +418,13 @@ def _doctor_config_path(args: argparse.Namespace) -> Path | None:
     return None
 
 
-def _print_config_checks(config, *, prepare_models: bool) -> bool:
+def _print_config_checks(
+    config,
+    *,
+    prepare_models: bool,
+    inbound: bool = False,
+    their_language: str | None = None,
+) -> bool:
     checks: list[tuple[str, Callable[[], str]]] = [
         (
             "audio.input",
@@ -449,6 +474,8 @@ def _print_config_checks(config, *, prepare_models: bool) -> bool:
 
     checks.append(("translation", prepare_translation))
     checks.append(("speech.output", validate_tts))
+    if inbound:
+        checks.extend(_inbound_checks(config, their_language))
     if prepare_models:
         checks.append(("speech.model", lambda: _prepare_asr_model(config)))
 
@@ -465,6 +492,61 @@ def _print_config_checks(config, *, prepare_models: bool) -> bool:
     if not prepare_models:
         print(f"{'INFO':7} {'speech.model':16} run doctor with --prepare-models before a demo")
     return passed
+
+
+def _inbound_checks(config, their_language: str | None) -> list[tuple[str, Callable[[], str]]]:
+    """Checks for the inbound direction that converse derives from this profile.
+
+    The first check derives the direction and runs the feedback-loop guard; the
+    rest reuse its result and report as skipped if it failed, so a machine
+    without the second cable gets one clear reason instead of five.
+    """
+    derived: list[AppConfig] = []
+
+    def route() -> str:
+        inbound = wire_inbound_devices(derive_inbound_config(config, their_language))
+        check_inbound_route(
+            outbound_output=config.audio.output_device,
+            inbound_input=inbound.audio.input_device,
+            inbound_output=inbound.audio.output_device,
+        )
+        derived.append(inbound)
+        return "second cable in, headset out, no feedback loop"
+
+    def derived_config() -> AppConfig:
+        if not derived:
+            raise ValueError("skipped: inbound.route failed")
+        return derived[0]
+
+    def translation() -> str:
+        settings = derived_config().translation
+        TranslationEngine(settings).prepare()
+        return f"{settings.engine} {settings.source_language}->{settings.target_language}"
+
+    def voice() -> str:
+        inbound = derived_config()
+        TtsSpeaker(inbound.tts, inbound.audio).validate()
+        return f"{inbound.tts.engine} {inbound.tts.model_path}"
+
+    # Devices are probed with the roles the pipeline opens them with, the same
+    # choice check_inbound_route makes.
+    return [
+        ("inbound.route", route),
+        (
+            "inbound.input",
+            lambda: _audio_device_detail(
+                derived_config().audio.input_device, "input", config.audio.sample_rate, "physical_input"
+            ),
+        ),
+        (
+            "inbound.output",
+            lambda: _audio_device_detail(
+                derived_config().audio.output_device, "output", config.audio.sample_rate, "translated_output"
+            ),
+        ),
+        ("inbound.mt", translation),
+        ("inbound.speech", voice),
+    ]
 
 
 def _audio_device_detail(
