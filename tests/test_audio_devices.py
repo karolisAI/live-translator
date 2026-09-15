@@ -241,6 +241,36 @@ class AudioDeviceSelectionTests(unittest.TestCase):
         self.assertEqual(remote, 31)
         self.assertEqual(translated, 7)
 
+    def test_auto_remote_playback_selects_cable_b_playback_endpoint(self) -> None:
+        output_devices = [
+            _output_device(26, "CABLE-A Input (VB-Audio Virtual Cable A)"),
+            _output_device(12, "CABLE-B Input (VB-Audio Virtual Cable B)", "MME"),
+            _output_device(24, "CABLE-B Input (VB-Audio Virtual Cable B)"),
+        ]
+        input_devices = [
+            _input_device(33, "CABLE-A Output (VB-Audio Virtual Cable A)"),
+            _input_device(31, "CABLE-B Output (VB-Audio Virtual Cable B)"),
+        ]
+
+        with patch(
+            "live_translator.audio.devices.list_devices",
+            side_effect=_inventory(inputs=input_devices, outputs=output_devices),
+        ):
+            playback = resolve_device_index("auto", "output", role="remote_playback")
+
+        self.assertEqual(playback, 24)
+
+    def test_auto_remote_playback_requires_a_second_cable(self) -> None:
+        with patch(
+            "live_translator.audio.devices.list_devices",
+            side_effect=_inventory(
+                inputs=[_input_device(8, "CABLE Output (VB-Audio Virtual Cable)")],
+                outputs=[_output_device(7, "CABLE Input (VB-Audio Virtual Cable)")],
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "second virtual cable"):
+                resolve_device_index("auto", "output", role="remote_playback")
+
     def test_auto_remote_input_requires_a_second_cable(self) -> None:
         single_cable_inventories = {
             "unlettered only": (

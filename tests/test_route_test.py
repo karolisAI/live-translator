@@ -33,6 +33,28 @@ class RouteTestTests(unittest.TestCase):
                 sample_rate=16000,
             )
 
+    def test_device_roles_decide_which_endpoints_are_resolved(self) -> None:
+        sound_device = FakeSoundDevice(lambda played, _rate: played * 0.5)
+        cases = {
+            "default outbound roles": ({}, ("translated_output", "meeting_input")),
+            "inbound second cable": (
+                {"output_role": "remote_playback", "input_role": "remote_input"},
+                ("remote_playback", "remote_input"),
+            ),
+        }
+
+        for label, (roles, (output_role, input_role)) in cases.items():
+            with (
+                self.subTest(label),
+                patch("live_translator.audio.route_test._audio_packages", return_value=(sound_device, np)),
+                patch("live_translator.audio.route_test.resolve_device_index", return_value=1) as resolve,
+                patch("live_translator.audio.route_test._candidate_rates", return_value=[16000]),
+            ):
+                run_route_test(output_device="auto", input_device="auto", sample_rate=16000, **roles)
+
+                resolve.assert_any_call("auto", "output", role=output_role)
+                resolve.assert_any_call("auto", "input", role=input_role)
+
     def test_generated_tone_passes(self) -> None:
         result = self._run_route_test(lambda played, _rate: played * 0.5)
 

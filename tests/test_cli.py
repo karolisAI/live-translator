@@ -134,6 +134,54 @@ class ConverseTests(unittest.TestCase):
         session.assert_not_called()
 
 
+class RouteTestInboundTests(unittest.TestCase):
+    def _run(self, extra_args: list[str], *, passed: bool = True):
+        stdout = io.StringIO()
+        result = SimpleNamespace(passed=passed, tone_rms=0.1400, tone_ratio=0.99, sample_rate=48000)
+        with TemporaryDirectory() as temp_dir:
+            profile = write_meeting_profile(
+                path=Path(temp_dir) / "en-de.yaml",
+                direction="en-de",
+                microphone_device="auto",
+                translated_output_device="auto",
+                meeting_microphone_device="auto",
+            )
+            with (
+                patch("live_translator.cli.test_output_to_input_route", return_value=result) as route,
+                patch(
+                    "live_translator.cli.describe_device_selection",
+                    side_effect=lambda name, kind, role: f"<{role}>",
+                ),
+                redirect_stdout(stdout),
+                redirect_stderr(io.StringIO()),
+            ):
+                code = main(["route-test", "--config", str(profile), *extra_args])
+        return code, route, stdout.getvalue()
+
+    def test_inbound_plays_into_the_second_cable_and_listens_where_inbound_captures(self) -> None:
+        code, route, output = self._run(["--inbound"])
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(route.call_args.kwargs["output_role"], "remote_playback")
+        self.assertEqual(route.call_args.kwargs["input_role"], "remote_input")
+        self.assertIn("PASS: <remote_playback> -> <remote_input>", output)
+
+    def test_inbound_failure_says_the_inbound_direction_will_not_hear_the_meeting(self) -> None:
+        code, _, output = self._run(["--inbound"], passed=False)
+
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL: <remote_playback> -> <remote_input>", output)
+        self.assertIn("inbound direction", output)
+
+    def test_outbound_route_test_keeps_its_roles(self) -> None:
+        code, route, output = self._run([])
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(route.call_args.kwargs["output_role"], "translated_output")
+        self.assertEqual(route.call_args.kwargs["input_role"], "meeting_input")
+        self.assertIn("PASS: <translated_output> -> <meeting_input>", output)
+
+
 class CliTests(unittest.TestCase):
     def test_say_config_does_not_force_tts_engine(self) -> None:
         args = build_parser().parse_args(

@@ -13,6 +13,7 @@ DeviceRole = Literal[
     "translated_output",
     "meeting_input",
     "remote_input",
+    "remote_playback",
     "headset_output",
 ]
 
@@ -191,6 +192,7 @@ def _resolve_automatic_device(
         "translated_output": "output",
         "meeting_input": "input",
         "remote_input": "input",
+        "remote_playback": "output",
         "headset_output": "output",
     }
     if expected_kind[role] != kind:
@@ -200,7 +202,9 @@ def _resolve_automatic_device(
         return _resolve_default_physical_device(candidates, kind)
 
     if role == "remote_input":
-        return _resolve_remote_cable_input().index
+        return _resolve_remote_cable_pair()[1].index
+    if role == "remote_playback":
+        return _resolve_remote_cable_pair()[0].index
 
     output_device, input_device = _resolve_virtual_cable_pair()
     return output_device.index if role == "translated_output" else input_device.index
@@ -282,13 +286,13 @@ def _resolve_virtual_cable_pair() -> tuple[AudioDevice, AudioDevice]:
     )
 
 
-def _resolve_remote_cable_input() -> AudioDevice:
-    """Recording end of the second cable, which carries the remote party's audio.
+def _resolve_remote_cable_pair() -> tuple[AudioDevice, AudioDevice]:
+    """The second cable, which carries the remote party's audio: (playback, recording).
 
-    The meeting app's speaker is routed into CABLE-B, so its recording endpoint
-    is the inbound direction's source. It is only valid while a different pair
-    is left for the outbound direction; otherwise both directions would share
-    one cable and each would capture the other's audio.
+    The meeting app's speaker plays into CABLE-B's playback endpoint, and the
+    inbound direction captures its recording endpoint. It is only valid while a
+    different pair is left for the outbound direction; otherwise both directions
+    would share one cable and each would capture the other's audio.
     """
     outputs = _standard_cable_devices(list_devices("output"), "output")
     inputs = _standard_cable_devices(list_devices("input"), "input")
@@ -303,7 +307,7 @@ def _resolve_remote_cable_input() -> AudioDevice:
             f"alongside the outbound CABLE-A or CABLE pair (complete pairs found: {found}). "
             "Install VB-CABLE A+B and route the meeting app's speaker to CABLE-B Input."
         )
-    return remote[1]
+    return remote
 
 
 def _complete_cable_pairs(

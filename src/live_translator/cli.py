@@ -108,6 +108,12 @@ def build_parser() -> argparse.ArgumentParser:
     route.add_argument("--config", default=None, help="YAML config file")
     route.add_argument("--meeting-microphone-device", default=None, help="override audio.peer_input_device")
     route.add_argument("--seconds", type=float, default=1.0)
+    route.add_argument(
+        "--inbound",
+        action="store_true",
+        help="test the second cable instead: play a tone into CABLE-B Input, as the meeting "
+        "app will, and listen on CABLE-B Output, where the inbound direction captures",
+    )
     route.set_defaults(func=cmd_route_test)
 
     purge = subparsers.add_parser(
@@ -658,6 +664,8 @@ def cmd_route_test(args: argparse.Namespace) -> int:
     if args.config is None:
         args.config = str(default_profile_path(args.profile))
     config = build_config(args)
+    if getattr(args, "inbound", False):
+        return _route_test_inbound(config, args.seconds)
     meeting_input = args.meeting_microphone_device or config.audio.peer_input_device
     if not meeting_input:
         raise ValueError("Set audio.peer_input_device in the profile or pass --meeting-microphone-device.")
@@ -669,6 +677,8 @@ def cmd_route_test(args: argparse.Namespace) -> int:
         input_device=meeting_input,
         sample_rate=config.audio.sample_rate,
         duration_seconds=args.seconds,
+        output_role="translated_output",
+        input_role="meeting_input",
     )
     status = "PASS" if result.passed else "FAIL"
     output_detail = describe_device_selection(
@@ -688,6 +698,35 @@ def cmd_route_test(args: argparse.Namespace) -> int:
     )
     if not result.passed:
         print("The meeting app probably will not hear translated audio on that microphone endpoint.")
+        return 1
+    return 0
+
+
+def _route_test_inbound(config, seconds: float) -> int:
+    """Play a tone into the second cable as the meeting app will; listen where inbound captures.
+
+    In a meeting the app's speaker plays into CABLE-B Input and the inbound
+    direction records CABLE-B Output, so this checks that exact route the same
+    way the outbound test checks CABLE Input to CABLE Output.
+    """
+    result = test_output_to_input_route(
+        output_device="auto",
+        input_device="auto",
+        sample_rate=config.audio.sample_rate,
+        duration_seconds=seconds,
+        output_role="remote_playback",
+        input_role="remote_input",
+    )
+    status = "PASS" if result.passed else "FAIL"
+    output_detail = describe_device_selection("auto", "output", role="remote_playback")
+    input_detail = describe_device_selection("auto", "input", role="remote_input")
+    print(
+        f"{status}: {output_detail} -> {input_detail} "
+        f"tone_rms={result.tone_rms:.4f} tone_ratio={result.tone_ratio:.2f} "
+        f"sample_rate={result.sample_rate}"
+    )
+    if not result.passed:
+        print("The inbound direction probably will not hear meeting audio played into the second cable.")
         return 1
     return 0
 
