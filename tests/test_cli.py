@@ -1,6 +1,8 @@
 import io
+import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -12,7 +14,8 @@ from live_translator.asr.model_store import recorded_revision
 from live_translator.audio.devices import AudioDevice
 from live_translator.cli import build_parser, cmd_prepare_models, main
 from live_translator.defaults import ASR_MODEL_REVISION
-from live_translator.profiles import write_meeting_profile
+from live_translator.config import AppConfig
+from live_translator.profiles import inbound_config, validate_inbound_config, write_meeting_profile
 from test_model_store import network_blocked, prepare_dir
 
 
@@ -110,6 +113,62 @@ class ConverseTests(unittest.TestCase):
 
         self.assertEqual(code, 1)
         self.assertIn("is a virtual device", stderr)
+        pipeline.assert_not_called()
+        session.assert_not_called()
+
+    def test_explicit_inbound_language_and_voice_are_validated_before_startup(self) -> None:
+        cases = (
+            ("en-de", "en_US", False, "must use de->en"),
+            ("de-en", "de_DE", False, "English Piper voice"),
+            ("de-en", "en_US", True, ""),
+        )
+        for direction, voice_language, accepted, error in cases:
+            with self.subTest(direction=direction, voice_language=voice_language), TemporaryDirectory() as temp:
+                outbound = self._profile(temp, "en-de")
+                explicit = Path(temp) / "inbound.yaml"
+                payload = yaml.safe_load(self._profile(temp, direction).read_text())
+                payload["audio"].update(input_device=CONVERSE_DEVICES[2].name,
+                                        output_device=CONVERSE_DEVICES[-1].name)
+                explicit.write_text(yaml.safe_dump(payload))
+                metadata = Path(temp) / "voice.onnx.json"
+                metadata.write_text(json.dumps({"language": {"code": voice_language}}))
+                with patch("live_translator.profiles.resolve_trusted_path",
+                           side_effect=[Path(temp) / "voice.onnx", metadata]):
+                    code, pipeline, session, stderr = self._run(
+                        ["converse", "--outbound-config", str(outbound), "--inbound-config", str(explicit)]
+                    )
+                self.assertEqual(code, 0 if accepted else 1, stderr)
+                if accepted:
+                    session.return_value.run.assert_called_once()
+                else:
+                    self.assertIn(error, stderr)
+                    pipeline.assert_not_called()
+                    session.assert_not_called()
+
+    def test_inbound_validator_explains_a_missing_voice_path(self) -> None:
+        outbound = AppConfig()
+        inbound = inbound_config(outbound)
+        for missing in (None, ""):
+            with self.subTest(model_path=missing):
+                invalid = replace(inbound, tts=replace(inbound.tts, engine="piper", model_path=missing))
+                with patch("live_translator.profiles.resolve_trusted_path") as resolve:
+                    with self.assertRaisesRegex(ValueError, "tts.model_path is required"):
+                        validate_inbound_config(outbound, invalid)
+                resolve.assert_not_called()
+
+    def test_explicit_inbound_without_voice_path_reports_a_config_error(self) -> None:
+        with TemporaryDirectory() as temp:
+            outbound = self._profile(temp, "en-de")
+            explicit = self._profile(temp, "de-en")
+            payload = yaml.safe_load(explicit.read_text())
+            del payload["tts"]["model_path"]
+            explicit.write_text(yaml.safe_dump(payload))
+            code, pipeline, session, stderr = self._run(
+                ["converse", "--outbound-config", str(outbound), "--inbound-config", str(explicit)]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("tts.model_path is required", stderr)
+        self.assertNotIn("Traceback", stderr)
         pipeline.assert_not_called()
         session.assert_not_called()
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ from live_translator.audio.devices import (
 from live_translator.config import AppConfig, validate_config
 from live_translator.defaults import DEFAULT_ASR_ENGINE, DEFAULT_ASR_MODEL
 from live_translator.errors import MissingDependency
-from live_translator.runtime import default_profile_path
+from live_translator.runtime import default_profile_path, resolve_trusted_path
 
 
 SUPPORTED_DIRECTIONS = ("en-de", "de-en")
@@ -76,6 +77,31 @@ def inbound_config(outbound: AppConfig, their_language: str | None = None) -> Ap
     )
     validate_config(inbound)
     return inbound
+
+
+def validate_inbound_config(outbound: AppConfig, inbound: AppConfig) -> None:
+    """Validate explicit overrides against the conversation's inbound contract."""
+    expected = inbound_config(outbound)
+    if (
+        (inbound.asr.source_language or "").lower() != expected.asr.source_language
+        or inbound.translation.source_language.lower() != expected.translation.source_language
+        or inbound.translation.target_language.lower() != INBOUND_TARGET_LANGUAGE
+    ):
+        raise ValueError(
+            "Inbound recognition and translation must use "
+            f"{expected.asr.source_language}->en, matching the outbound target language."
+        )
+    if inbound.tts.engine.lower() not in {"piper", "piper-cli"}:
+        raise ValueError("Inbound speech requires an English Piper voice.")
+    if not inbound.tts.model_path:
+        raise ValueError("tts.model_path is required for the inbound English Piper voice.")
+    model = resolve_trusted_path(inbound.tts.model_path)
+    metadata_path = resolve_trusted_path(model.with_suffix(".onnx.json"))
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    language = metadata.get("language", {}) if isinstance(metadata, dict) else {}
+    code = language.get("code", "") if isinstance(language, dict) else ""
+    if not isinstance(code, str) or code.lower().replace("-", "_").split("_")[0] != "en":
+        raise ValueError("Inbound speech requires an English Piper voice (language.code in its metadata).")
 
 
 def wire_inbound_devices(inbound: AppConfig) -> AppConfig:

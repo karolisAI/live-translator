@@ -501,6 +501,16 @@ class InboundRouteGuardTests(unittest.TestCase):
                     inbound_output="Headphones (Jabra Evolve2 65)",
                 )
 
+    def test_other_virtual_inputs_are_not_accepted_as_cable_b(self) -> None:
+        for name in ("CABLE Output (VB-Audio Virtual Cable)", "VBMatrix Out 2 (VB-Audio Matrix VAIO)"):
+            with self.subTest(name=name):
+                extra = _input_device(99, name)
+                with patch("live_translator.audio.devices.list_devices",
+                           side_effect=_inventory(inputs=self.INPUTS + [extra], outputs=self.OUTPUTS)):
+                    with self.assertRaisesRegex(ValueError, "not CABLE-B"):
+                        check_inbound_route(outbound_output=self.OUTPUTS[0].name,
+                                            inbound_input=name, inbound_output=self.OUTPUTS[3].name)
+
     def test_unset_inbound_devices_are_refused(self) -> None:
         for inbound_input, inbound_output in (
             (None, "Headphones (Jabra Evolve2 65)"),

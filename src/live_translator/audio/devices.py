@@ -143,7 +143,8 @@ def check_inbound_route(
 
     The outbound direction plays translated speech into a virtual cable that the
     meeting app records as the user's microphone. The inbound direction must
-    capture the remote party from a different cable and play to a real device.
+    capture the remote party from CABLE-B's recording endpoint, distinct from
+    the outbound cable, and play to a real device.
     Otherwise its speech reaches the meeting, or it translates the user's own
     translated speech back. Devices are compared as endpoints rather than
     indices, because Windows lists each endpoint once per host API.
@@ -183,6 +184,12 @@ def check_inbound_route(
         raise ValueError(
             f"Inbound input '{capture.name}' records the outbound direction's cable, so it "
             "would translate the user's own translated speech. Use the second cable (CABLE-B)."
+        )
+
+    if not capture_cable or capture_cable[0][1] != _REMOTE_CABLE_IDENTITY:
+        raise ValueError(
+            f"Inbound input '{capture.name}' is not CABLE-B's recording endpoint. "
+            "Route the meeting speaker to CABLE-B Input and capture CABLE-B Output."
         )
 
 

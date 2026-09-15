@@ -31,7 +31,7 @@ from live_translator.mt.argos_packages import install_argos_package, print_insta
 from live_translator.pipeline import LocalTranslatorPipeline
 from live_translator.profiles import SUPPORTED_DIRECTIONS, prompt_for_device, write_meeting_profile
 from live_translator.profiles import inbound_config as derive_inbound_config
-from live_translator.profiles import wire_inbound_devices
+from live_translator.profiles import validate_inbound_config, wire_inbound_devices
 from live_translator.runtime import default_profile_path
 from live_translator.session import BidirectionalSession, Direction
 from live_translator.tts import TtsSpeaker
@@ -813,6 +813,8 @@ def cmd_converse(args: argparse.Namespace) -> int:
         inbound_input=inbound_config.audio.input_device,
         inbound_output=inbound_config.audio.output_device,
     )
+    if args.inbound_config or args.inbound_profile:
+        validate_inbound_config(outbound_config, inbound_config)
 
     directions = [
         _build_direction(outbound_config, args),

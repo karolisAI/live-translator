@@ -9,12 +9,16 @@ meeting must leave no audio, transcript or translation behind.
 import io
 import os
 import unittest
+import wave
 from datetime import datetime, timedelta
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import numpy as np
+
+from live_translator.profiles import inbound_config
 from live_translator.config import AppConfig, DiagnosticsSettings, load_config
 from live_translator.pipeline import LocalTranslatorPipeline
 from live_translator.diagnostics import (
@@ -166,6 +170,26 @@ class CaptureActivationTests(unittest.TestCase):
                 diagnostics=diagnostics, debug_audio_dir=debug_audio_dir
             )
         return result, buffer.getvalue()
+
+    def test_directions_starting_in_the_same_second_keep_both_captures(self) -> None:
+        outbound = AppConfig(diagnostics=DiagnosticsSettings(enabled=True, retention_days=0, max_total_mb=0))
+        inbound = inbound_config(outbound)
+        pipelines = [LocalTranslatorPipeline(outbound), LocalTranslatorPipeline(inbound)]
+        paths = []
+        with patch("live_translator.pipeline.session_directory_name", return_value="session-20260915-120000-42"), redirect_stdout(io.StringIO()):
+            for number, pipeline in enumerate(pipelines, 1):
+                directory = pipeline._start_diagnostics(diagnostics=False, debug_audio_dir=None)
+                wav = pipeline._write_debug_audio(directory, 1, np.full(1600 * number, 0.1, dtype=np.float32))
+                pipeline._write_debug_note(wav, f"source {number}", f"target {number}")
+                paths.append(wav)
+        self.assertNotEqual(paths[0], paths[1])
+        for number, wav in enumerate(paths, 1):
+            with wave.open(str(wav)) as audio:
+                self.assertEqual(audio.getnframes(), 1600 * number)
+            self.assertIn(f"source=source {number}", wav.with_suffix(".txt").read_text())
+        self.assertEqual(len(captured_files(self.root)), 4)
+        purge(outbound.diagnostics, root=self.root)
+        self.assertEqual(captured_files(self.root), [])
 
     def test_normal_run_captures_nothing_and_creates_no_directory(self) -> None:
         result, output = self._start()

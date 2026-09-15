@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import mkdtemp
 from threading import Event, Thread
 from time import perf_counter
 
@@ -553,8 +554,10 @@ class LocalTranslatorPipeline:
 
         try:
             root = resolve_capture_dir(settings, debug_audio_dir)
-            capture_dir = root / session_directory_name()
-            capture_dir.mkdir(parents=True, exist_ok=True)
+            root.mkdir(parents=True, exist_ok=True)
+            # Directions share a PID and start together; create atomically unique
+            # session directories while retaining the retention/purge layout.
+            capture_dir = Path(mkdtemp(prefix=session_directory_name() + "-", dir=root))
         except (OSError, ValueError) as exc:
             print(
                 f"Diagnostic capture could not start: {exc}. "
