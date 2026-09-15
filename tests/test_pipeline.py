@@ -465,6 +465,35 @@ class OfflineStartupOrderTests(unittest.TestCase):
             fake_record.assert_not_called()
 
 
+class AudioRouteLabelTests(unittest.TestCase):
+    """The capture line names what the device is, so the inbound direction's
+    second cable is not printed as a physical microphone."""
+
+    def _route(self, input_device: str, *, virtual: bool) -> str:
+        config = AppConfig()
+        pipeline = LocalTranslatorPipeline(replace(config, audio=replace(config.audio, input_device=input_device)))
+        buffer = io.StringIO()
+        with (
+            patch("live_translator.pipeline.resolve_device_index", return_value=31),
+            patch("live_translator.pipeline.is_virtual_device", return_value=virtual),
+            patch("live_translator.pipeline.describe_device_index", return_value=input_device),
+            redirect_stdout(buffer),
+        ):
+            pipeline._print_audio_route()
+        return buffer.getvalue()
+
+    def test_microphone_capture_keeps_the_physical_microphone_label(self) -> None:
+        output = self._route("Microphone (Jabra Evolve2 65)", virtual=False)
+
+        self.assertIn("  Physical microphone: Microphone (Jabra Evolve2 65)", output)
+
+    def test_cable_capture_is_labelled_as_remote_party_audio(self) -> None:
+        output = self._route("CABLE-B Output (VB-Audio Virtual Cable B)", virtual=True)
+
+        self.assertIn("  Remote party audio:  CABLE-B Output (VB-Audio Virtual Cable B)", output)
+        self.assertNotIn("Physical microphone", output)
+
+
 class ShowTextTests(unittest.TestCase):
     """A deliberate way to watch the conversation, without the debug output.
 

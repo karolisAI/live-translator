@@ -122,6 +122,17 @@ def describe_device_index(index: int | None, kind: DeviceKind) -> str:
     return f"{device.name} [{device.host_api}] (index={device.index})"
 
 
+def is_virtual_device(index: int | None, kind: DeviceKind) -> bool:
+    """Whether a resolved device is a virtual cable or mixer endpoint.
+
+    None, the Windows default, is not judged virtual: nothing is known about it.
+    """
+    if index is None:
+        return False
+    device = next((device for device in list_devices(kind) if device.index == index), None)
+    return device is not None and _is_virtual_audio_device(device.name)
+
+
 def check_inbound_route(
     *,
     outbound_output: str | None,

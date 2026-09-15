@@ -5,6 +5,7 @@ from unittest.mock import patch
 from live_translator.audio.devices import (
     AudioDevice,
     check_inbound_route,
+    is_virtual_device,
     resolve_device_index,
 )
 
@@ -359,6 +360,19 @@ class AudioDeviceSelectionTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "no default output device"):
                 resolve_device_index("auto", "output", role="headset_output")
+
+    def test_is_virtual_device_judges_the_resolved_endpoint(self) -> None:
+        devices = [
+            _input_device(31, "CABLE-B Output (VB-Audio Virtual Cable B)"),
+            _input_device(30, "Microphone (Jabra Evolve2 65)"),
+        ]
+
+        with patch("live_translator.audio.devices.list_devices", return_value=devices):
+            self.assertTrue(is_virtual_device(31, "input"))
+            self.assertFalse(is_virtual_device(30, "input"))
+            # The Windows default and an index no longer present are unknown, not virtual.
+            self.assertFalse(is_virtual_device(None, "input"))
+            self.assertFalse(is_virtual_device(99, "input"))
 
     def test_auto_input_without_role_defaults_to_physical_input(self) -> None:
         devices = [_input_device(30, "Microphone (USB Headset)")]
