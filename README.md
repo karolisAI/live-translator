@@ -68,6 +68,10 @@ models/tts/de_DE-thorsten-medium.onnx
 models/tts/de_DE-thorsten-medium.onnx.json
 models/tts/en_US-hfc_male-medium.onnx
 models/tts/en_US-hfc_male-medium.onnx.json
+models/tts/de_DE-kerstin-low.onnx
+models/tts/de_DE-kerstin-low.onnx.json
+models/tts/en_US-hfc_female-medium.onnx
+models/tts/en_US-hfc_female-medium.onnx.json
 models/asr/parakeet-tdt-0.6b-v3/config.json
 models/asr/parakeet-tdt-0.6b-v3/vocab.txt
 models/asr/parakeet-tdt-0.6b-v3/encoder-model.int8.onnx
@@ -192,27 +196,41 @@ files into `models\tts`:
 
 ### Additional voices
 
-Thorsten and hfc_male above are the only approved voices the installer bundles.
-Do not copy another voice directly into `models\tts`: protected roots reject
-unlisted files. Adding a voice is a release change that requires provenance
-review, manifest size and SHA-256 entries, tests and a rebuilt application.
-Possible upstream candidates include:
+The bundled voice registry includes Thorsten and Kerstin for German, and
+hfc_male and hfc_female for English. All four models and their matching JSON
+files must be staged in `models\tts` before building; the Windows spec bundles
+that directory and validates it against the pinned manifest. A source checkout
+does not download these files automatically. Female voice sources:
 
 - [German Kerstin low](https://huggingface.co/rhasspy/piper-voices/tree/main/de/de_DE/kerstin/low)
-- [German Ramona low](https://huggingface.co/rhasspy/piper-voices/tree/main/de/de_DE/ramona/low)
 - [English hfc_female medium](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/hfc_female/medium)
 
-German female voices only go up to `low` quality in the standard Piper
-voice set; `hfc_female` matches the bundled `hfc_male` at `medium`.
-
-The `meeting` subcommand always uses the profile's configured
-`tts.model_path` and has no `--tts-model` flag. To use a female voice for a
-single run without editing the profile, use `loopback` instead, which
-supports the same audio routing and accepts `--tts-model` directly:
+Select a voice for a single run without changing the profile:
 
 ```powershell
-& $LT loopback --config "$Profiles\en-de.yaml" --tts-model de_DE-kerstin-low.onnx
+live-translator meeting --profile en-de --voice female
+live-translator meeting --profile de-en --voice female
+live-translator meeting --profile en-de --voice male
 ```
+
+`--voice` selects by the profile's translation target language: German female
+is Kerstin (`low`, 16 kHz), English female is hfc_female (`medium`, 22.05 kHz).
+Omitting it preserves the profile's voice. `meeting`, `loopback`, `say` and
+`translate-once` also accept `--tts-model models/tts/<voice>.onnx`; do not combine
+it with `--voice`. All voice loading remains local and integrity-checked.
+Rebuild the EXE/installer to use these options in an installed application;
+an existing packaged EXE does not pick up source-code changes.
+
+**License review required:** [Kerstin's pinned model card](https://huggingface.co/rhasspy/piper-voices/blob/39ab474be869e9181350af6a65e4953eef67aaa0/de/de_DE/kerstin/low/MODEL_CARD)
+lists CC0 for its dataset. [hfc_female's pinned model card](https://huggingface.co/rhasspy/piper-voices/blob/39ab474be869e9181350af6a65e4953eef67aaa0/en/en_US/hfc_female/medium/MODEL_CARD)
+lists CC BY-NC-SA 4.0 for its dataset. Technical inclusion and matching hashes
+do not establish permission for commercial/company use or redistribution;
+obtain the project's licensing approval before using or distributing that voice
+for those purposes.
+
+Do not copy arbitrary voices into `models\tts`: protected roots reject unlisted
+files. Additional models require provenance/licensing review, matching manifest
+size and SHA-256 entries, tests and a rebuilt application.
 
 ## Speech Recognition
 
