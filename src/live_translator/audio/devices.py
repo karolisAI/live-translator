@@ -142,9 +142,12 @@ def check_inbound_route(
             "audio.output_device; the Windows default cannot be checked for a feedback loop."
         )
 
+    # Resolve with the roles the pipeline itself uses for audio.input_device and
+    # audio.output_device, so "auto" is judged by what would actually open (the
+    # physical microphone and the outbound cable), not by what inbound should use.
     outbound = _resolved_device(outbound_output, "output", "translated_output")
-    capture = _resolved_device(inbound_input, "input", "remote_input")
-    playback = _resolved_device(inbound_output, "output", "headset_output")
+    capture = _resolved_device(inbound_input, "input", "physical_input")
+    playback = _resolved_device(inbound_output, "output", "translated_output")
     assert capture is not None and playback is not None  # both names were checked above
 
     if _is_virtual_audio_device(playback.name):

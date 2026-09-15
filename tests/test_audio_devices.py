@@ -443,6 +443,20 @@ class InboundRouteGuardTests(unittest.TestCase):
                 inbound_output="Headphones (Jabra Evolve2 65)",
             )
 
+    def test_auto_inbound_devices_are_judged_as_the_pipeline_opens_them(self) -> None:
+        # The pipeline reads audio.input_device as the physical microphone, so
+        # "auto" there captures the microphone, never CABLE-B.
+        with patch(
+            "live_translator.audio.devices._sounddevice",
+            return_value=_default_sounddevice(30),
+        ):
+            with self.assertRaisesRegex(ValueError, "not a virtual cable"):
+                self._check(
+                    outbound_output="CABLE-A Input (VB-Audio Virtual Cable A)",
+                    inbound_input="auto",
+                    inbound_output="Headphones (Jabra Evolve2 65)",
+                )
+
     def test_unset_inbound_devices_are_refused(self) -> None:
         for inbound_input, inbound_output in (
             (None, "Headphones (Jabra Evolve2 65)"),

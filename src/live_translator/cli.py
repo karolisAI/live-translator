@@ -11,6 +11,7 @@ from live_translator.asr.model_store import download_model, model_dir, verify_lo
 from live_translator.audio.route_test import test_output_to_input_route
 from live_translator.audio.devices import (
     DeviceRole,
+    check_inbound_route,
     describe_device_selection,
     print_devices,
     probe_devices,
@@ -29,6 +30,8 @@ from live_translator.mt import TranslationEngine
 from live_translator.mt.argos_packages import install_argos_package, print_installed_argos_packages
 from live_translator.pipeline import LocalTranslatorPipeline
 from live_translator.profiles import SUPPORTED_DIRECTIONS, prompt_for_device, write_meeting_profile
+from live_translator.profiles import inbound_config as derive_inbound_config
+from live_translator.profiles import wire_inbound_devices
 from live_translator.runtime import default_profile_path
 from live_translator.session import BidirectionalSession, Direction
 from live_translator.tts import TtsSpeaker
@@ -229,8 +232,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     converse.add_argument("--outbound-config", default=None, help="explicit config path for the outbound direction")
     converse.add_argument("--outbound-profile", default=None, help="profile name for the outbound direction")
-    converse.add_argument("--inbound-config", default=None, help="explicit config path for the inbound direction")
+    converse.add_argument(
+        "--inbound-config",
+        default=None,
+        help="explicit config path for the inbound direction; omit both inbound options to derive "
+        "it from the outbound profile (second cable CABLE-B in, Windows default headset out)",
+    )
     converse.add_argument("--inbound-profile", default=None, help="profile name for the inbound direction")
+    converse.add_argument(
+        "--their-language",
+        default=None,
+        help="remote party's language for a derived inbound direction "
+        "(default: the outbound profile's target language)",
+    )
     converse.add_argument(
         "--show-text",
         action="store_true",
@@ -659,7 +673,25 @@ def cmd_loopback(args: argparse.Namespace) -> int:
 
 def cmd_converse(args: argparse.Namespace) -> int:
     outbound_config = _resolve_direction_config(args.outbound_config, args.outbound_profile, "outbound")
-    inbound_config = _resolve_direction_config(args.inbound_config, args.inbound_profile, "inbound")
+    if args.inbound_config or args.inbound_profile:
+        if args.their_language:
+            raise ValueError(
+                "--their-language only applies to a derived inbound direction; "
+                "drop it or drop --inbound-config/--inbound-profile"
+            )
+        inbound_config = _resolve_direction_config(args.inbound_config, args.inbound_profile, "inbound")
+    else:
+        inbound_config = wire_inbound_devices(
+            derive_inbound_config(outbound_config, args.their_language)
+        )
+    # Before anything is loaded or opened: an inbound route that plays into the
+    # meeting's cable, or captures a microphone or the outbound cable, would loop
+    # audio back into the call. This applies to explicit inbound profiles too.
+    check_inbound_route(
+        outbound_output=outbound_config.audio.output_device,
+        inbound_input=inbound_config.audio.input_device,
+        inbound_output=inbound_config.audio.output_device,
+    )
 
     directions = [
         _build_direction(outbound_config, args),

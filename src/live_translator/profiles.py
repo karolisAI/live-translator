@@ -4,7 +4,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from live_translator.audio.devices import AudioDevice, list_devices
+from live_translator.audio.devices import (
+    AudioDevice,
+    DeviceKind,
+    DeviceRole,
+    list_devices,
+    resolve_device_index,
+)
 from live_translator.config import AppConfig, validate_config
 from live_translator.defaults import DEFAULT_ASR_ENGINE, DEFAULT_ASR_MODEL
 from live_translator.errors import MissingDependency
@@ -70,6 +76,33 @@ def inbound_config(outbound: AppConfig, their_language: str | None = None) -> Ap
     )
     validate_config(inbound)
     return inbound
+
+
+def wire_inbound_devices(inbound: AppConfig) -> AppConfig:
+    """Point the inbound direction at the second cable and the user's headset.
+
+    Capture is the recording end of CABLE-B, where the meeting app's speaker is
+    routed; playback is Windows' default headset or speakers. Both are resolved
+    to concrete device names here because the pipeline reads audio.input_device
+    and audio.output_device with the outbound roles, where "auto" would mean the
+    physical microphone and the outbound cable.
+    """
+    capture = _auto_device_name("input", "remote_input")
+    headset = _auto_device_name("output", "headset_output")
+    return replace(
+        inbound,
+        audio=replace(
+            inbound.audio,
+            input_device=capture,
+            output_device=headset,
+            peer_input_device=None,
+        ),
+    )
+
+
+def _auto_device_name(kind: DeviceKind, role: DeviceRole) -> str:
+    index = resolve_device_index("auto", kind, role=role)
+    return next(device.name for device in list_devices(kind) if device.index == index)
 
 
 def write_meeting_profile(
