@@ -77,6 +77,16 @@ class GitIgnoreTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 1, "pyproject.toml must not be ignored")
 
+    def test_committed_vad_test_sample_is_not_ignored(self) -> None:
+        """*.wav has one deliberate exception, the VAD test sample under tests/fixtures."""
+        completed = subprocess.run(
+            ["git", "check-ignore", "-q", "tests/fixtures/vad_cable_b_de.wav"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 1, "the VAD test sample must stay committable")
+
 
 if __name__ == "__main__":
     unittest.main()

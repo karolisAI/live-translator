@@ -6,6 +6,10 @@ __pycache__/
 *.pyc
 *.pyo
 *.wav
+# The one committed recording: the VAD test sample, spoken in the app's own CC0
+# voice and captured through CABLE-B (tests/test_vad_cable_fixture.py). Nothing
+# the app generates is written under tests/fixtures.
+!tests/fixtures/*.wav
 *.log
 dist/
 build/
