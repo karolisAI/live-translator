@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from live_translator.audio.devices import (
     AudioDevice,
+    check_inbound_route,
     resolve_device_index,
 )
 
@@ -367,6 +368,93 @@ class AudioDeviceSelectionTests(unittest.TestCase):
 
         self.assertIn("[30] Microphone (USB Headset)", str(error.exception))
         self.assertIn("[32] Microphone Array (AMD Audio Device)", str(error.exception))
+
+
+class InboundRouteGuardTests(unittest.TestCase):
+    OUTPUTS = [
+        _output_device(26, "CABLE-A Input (VB-Audio Virtual Cable A)"),
+        _output_device(9, "CABLE-A Input (VB-Audio Virtual Cable A)", "MME"),
+        _output_device(24, "CABLE-B Input (VB-Audio Virtual Cable B)"),
+        _output_device(40, "Headphones (Jabra Evolve2 65)"),
+        _output_device(3, "Headphones (Jabra Evolve2 65)", "MME"),
+    ]
+    INPUTS = [
+        _input_device(33, "CABLE-A Output (VB-Audio Virtual Cable A)"),
+        _input_device(31, "CABLE-B Output (VB-Audio Virtual Cable B)"),
+        _input_device(30, "Microphone (Jabra Evolve2 65)"),
+    ]
+
+    def _check(self, *, outbound_output: str | None, inbound_input: str | None, inbound_output: str | None) -> None:
+        with patch(
+            "live_translator.audio.devices.list_devices",
+            side_effect=_inventory(inputs=self.INPUTS, outputs=self.OUTPUTS),
+        ):
+            check_inbound_route(
+                outbound_output=outbound_output,
+                inbound_input=inbound_input,
+                inbound_output=inbound_output,
+            )
+
+    def test_second_cable_in_and_headset_out_is_accepted(self) -> None:
+        self._check(
+            outbound_output="CABLE-A Input (VB-Audio Virtual Cable A)",
+            inbound_input="CABLE-B Output (VB-Audio Virtual Cable B)",
+            inbound_output="Headphones (Jabra Evolve2 65)",
+        )
+
+    def test_inbound_output_into_any_virtual_cable_is_refused(self) -> None:
+        for virtual_output in (
+            "CABLE-A Input (VB-Audio Virtual Cable A)",
+            # Same cable, listed under another host API with a different index.
+            "9",
+            "CABLE-B Input (VB-Audio Virtual Cable B)",
+        ):
+            with self.subTest(virtual_output):
+                with self.assertRaisesRegex(ValueError, "is a virtual device"):
+                    self._check(
+                        outbound_output="CABLE-A Input (VB-Audio Virtual Cable A)",
+                        inbound_input="CABLE-B Output (VB-Audio Virtual Cable B)",
+                        inbound_output=virtual_output,
+                    )
+
+    def test_inbound_output_matching_the_outbound_output_is_refused(self) -> None:
+        # Without a cable, e.g. while testing, both directions could name the same
+        # real device; the MME entry "3" is the same endpoint as WASAPI "40".
+        with self.assertRaisesRegex(ValueError, "also the outbound direction's output"):
+            self._check(
+                outbound_output="Headphones (Jabra Evolve2 65)",
+                inbound_input="CABLE-B Output (VB-Audio Virtual Cable B)",
+                inbound_output="3",
+            )
+
+    def test_inbound_input_from_a_microphone_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "not a virtual cable"):
+            self._check(
+                outbound_output="CABLE-A Input (VB-Audio Virtual Cable A)",
+                inbound_input="Microphone (Jabra Evolve2 65)",
+                inbound_output="Headphones (Jabra Evolve2 65)",
+            )
+
+    def test_inbound_input_from_the_outbound_cable_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "records the outbound direction's cable"):
+            self._check(
+                outbound_output="CABLE-A Input (VB-Audio Virtual Cable A)",
+                inbound_input="CABLE-A Output (VB-Audio Virtual Cable A)",
+                inbound_output="Headphones (Jabra Evolve2 65)",
+            )
+
+    def test_unset_inbound_devices_are_refused(self) -> None:
+        for inbound_input, inbound_output in (
+            (None, "Headphones (Jabra Evolve2 65)"),
+            ("CABLE-B Output (VB-Audio Virtual Cable B)", None),
+        ):
+            with self.subTest(inbound_input=inbound_input, inbound_output=inbound_output):
+                with self.assertRaisesRegex(ValueError, "needs an explicit"):
+                    self._check(
+                        outbound_output="CABLE-A Input (VB-Audio Virtual Cable A)",
+                        inbound_input=inbound_input,
+                        inbound_output=inbound_output,
+                    )
 
 
 if __name__ == "__main__":

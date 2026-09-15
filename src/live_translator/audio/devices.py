@@ -121,6 +121,63 @@ def describe_device_index(index: int | None, kind: DeviceKind) -> str:
     return f"{device.name} [{device.host_api}] (index={device.index})"
 
 
+def check_inbound_route(
+    *,
+    outbound_output: str | None,
+    inbound_input: str | None,
+    inbound_output: str | None,
+) -> None:
+    """Refuse an inbound route that could loop audio back into the meeting.
+
+    The outbound direction plays translated speech into a virtual cable that the
+    meeting app records as the user's microphone. The inbound direction must
+    capture the remote party from a different cable and play to a real device.
+    Otherwise its speech reaches the meeting, or it translates the user's own
+    translated speech back. Devices are compared as endpoints rather than
+    indices, because Windows lists each endpoint once per host API.
+    """
+    if not inbound_input or not inbound_output:
+        raise ValueError(
+            "The inbound direction needs an explicit audio.input_device and "
+            "audio.output_device; the Windows default cannot be checked for a feedback loop."
+        )
+
+    outbound = _resolved_device(outbound_output, "output", "translated_output")
+    capture = _resolved_device(inbound_input, "input", "remote_input")
+    playback = _resolved_device(inbound_output, "output", "headset_output")
+    assert capture is not None and playback is not None  # both names were checked above
+
+    if _is_virtual_audio_device(playback.name):
+        raise ValueError(
+            f"Inbound output '{playback.name}' is a virtual device. Play inbound speech to "
+            "a headset or speakers, or it is fed back into the meeting."
+        )
+    if outbound is not None and _same_friendly_endpoint(playback.name, outbound.name):
+        raise ValueError(
+            f"Inbound output '{playback.name}' is also the outbound direction's output device."
+        )
+    if not _is_virtual_audio_device(capture.name):
+        raise ValueError(
+            f"Inbound input '{capture.name}' is not a virtual cable. The inbound direction "
+            "must capture the meeting from the second cable, never a microphone."
+        )
+
+    outbound_cable = _standard_cable_devices([outbound], "output") if outbound else []
+    capture_cable = _standard_cable_devices([capture], "input")
+    if outbound_cable and capture_cable and outbound_cable[0][1] == capture_cable[0][1]:
+        raise ValueError(
+            f"Inbound input '{capture.name}' records the outbound direction's cable, so it "
+            "would translate the user's own translated speech. Use the second cable (CABLE-B)."
+        )
+
+
+def _resolved_device(name: str | None, kind: DeviceKind, role: DeviceRole) -> AudioDevice | None:
+    index = resolve_device_index(name, kind, role=role)
+    if index is None:
+        return None
+    return next(device for device in list_devices(kind) if device.index == index)
+
+
 def _resolve_automatic_device(
     candidates: list[AudioDevice],
     kind: DeviceKind,
