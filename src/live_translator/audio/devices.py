@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Literal
+from typing import Iterator, Literal
 
 from live_translator.errors import MissingDependency
 
@@ -50,19 +50,33 @@ def list_devices(kind: DeviceKind | None = None) -> list[AudioDevice]:
     return devices
 
 
+def _devices_for_kind(devices: list[AudioDevice], kind: DeviceKind) -> list[AudioDevice]:
+    return [d for d in devices if (d.max_input_channels if kind == "input" else d.max_output_channels) > 0]
+
+
+def device_by_index(index: int, kind: DeviceKind, *, devices: list[AudioDevice] | None = None) -> AudioDevice:
+    candidates = list_devices(kind) if devices is None else _devices_for_kind(devices, kind)
+    for device in candidates:
+        if device.index == index:
+            return device
+    raise ValueError(f"Device index {index} is not a valid {kind} device.")
+
+
 def resolve_device_index(
     name: str | None,
     kind: DeviceKind,
     *,
     role: DeviceRole | None = None,
+    devices: list[AudioDevice] | None = None,
 ) -> int | None:
     if not name:
         return None
 
-    candidates = list_devices(kind)
+    devices = list_devices() if devices is None else devices
+    candidates = _devices_for_kind(devices, kind)
     if name.strip().lower() == "auto":
         inferred_role = role or ("translated_output" if kind == "output" else "physical_input")
-        return _resolve_automatic_device(candidates, kind, inferred_role)
+        return _resolve_automatic_device(candidates, kind, inferred_role, devices)
 
     if name.isdigit():
         requested_index = int(name)
@@ -118,7 +132,7 @@ def describe_device_selection(
 def describe_device_index(index: int | None, kind: DeviceKind) -> str:
     if index is None:
         return "Windows default"
-    device = next(device for device in list_devices(kind) if device.index == index)
+    device = device_by_index(index, kind)
     return f"{device.name} [{device.host_api}] (index={device.index})"
 
 
@@ -158,19 +172,20 @@ def check_inbound_route(
     # Resolve with the roles the pipeline itself uses for audio.input_device and
     # audio.output_device, so "auto" is judged by what would actually open (the
     # physical microphone and the outbound cable), not by what inbound should use.
-    outbound = _resolved_device(outbound_output, "output", "translated_output")
+    devices = list_devices()
+    outbound = resolve_device(outbound_output, "output", role="translated_output", devices=devices)
     if outbound is None:
         # An unset output plays to the Windows default, and that default can itself
         # be a cable: installing VB-CABLE A+B can make CABLE-B Input the default.
         # Judge the device that would really play instead of skipping the checks.
-        outbound = _windows_default_device(list_devices("output"), "output")
+        outbound = _windows_default_device(_devices_for_kind(devices, "output"), "output")
         if outbound is None:
             raise ValueError(
                 "The outbound direction has no audio.output_device and Windows has no "
                 "default output, so the inbound route cannot be checked for a feedback loop."
             )
-    capture = _resolved_device(inbound_input, "input", "physical_input")
-    playback = _resolved_device(inbound_output, "output", "translated_output")
+    capture = resolve_device(inbound_input, "input", role="physical_input", devices=devices)
+    playback = resolve_device(inbound_output, "output", role="translated_output", devices=devices)
     assert capture is not None and playback is not None  # both names were checked above
 
     if _is_virtual_audio_device(playback.name):
@@ -203,17 +218,22 @@ def check_inbound_route(
         )
 
 
-def _resolved_device(name: str | None, kind: DeviceKind, role: DeviceRole) -> AudioDevice | None:
-    index = resolve_device_index(name, kind, role=role)
-    if index is None:
+def resolve_device(
+    name: str | None, kind: DeviceKind, *, role: DeviceRole | None = None,
+    devices: list[AudioDevice] | None = None,
+) -> AudioDevice | None:
+    if not name:
         return None
-    return next(device for device in list_devices(kind) if device.index == index)
+    devices = list_devices() if devices is None else devices
+    index = resolve_device_index(name, kind, role=role, devices=devices)
+    return None if index is None else device_by_index(index, kind, devices=devices)
 
 
 def _resolve_automatic_device(
     candidates: list[AudioDevice],
     kind: DeviceKind,
     role: DeviceRole,
+    devices: list[AudioDevice],
 ) -> int:
     expected_kind: dict[DeviceRole, DeviceKind] = {
         "physical_input": "input",
@@ -230,11 +250,11 @@ def _resolve_automatic_device(
         return _resolve_default_physical_device(candidates, kind)
 
     if role == "remote_input":
-        return _resolve_remote_cable_pair()[1].index
+        return _resolve_remote_cable_pair(devices)[1].index
     if role == "remote_playback":
-        return _resolve_remote_cable_pair()[0].index
+        return _resolve_remote_cable_pair(devices)[0].index
 
-    output_device, input_device = _resolve_virtual_cable_pair()
+    output_device, input_device = _resolve_virtual_cable_pair(devices)
     return output_device.index if role == "translated_output" else input_device.index
 
 
@@ -300,14 +320,15 @@ _REMOTE_CABLE_IDENTITY = "b"
 _POINT_WORD = re.compile(r"\bPOINT\b")
 
 
-def _resolve_virtual_cable_pair() -> tuple[AudioDevice, AudioDevice]:
+def _resolve_virtual_cable_pair(devices: list[AudioDevice] | None = None) -> tuple[AudioDevice, AudioDevice]:
     """The outbound pair: translated speech plays into it, the meeting records it."""
-    outputs = _standard_cable_devices(list_devices("output"), "output")
-    inputs = _standard_cable_devices(list_devices("input"), "input")
+    devices = list_devices() if devices is None else devices
+    outputs = _standard_cable_devices(_devices_for_kind(devices, "output"), "output")
+    inputs = _standard_cable_devices(_devices_for_kind(devices, "input"), "input")
 
-    pairs = _complete_cable_pairs(outputs, inputs)
-    if pairs:
-        return next(iter(pairs.values()))
+    pair = next(_complete_cable_pairs(outputs, inputs), None)
+    if pair is not None:
+        return pair[1]
 
     available_outputs = ", ".join(sorted({cable for _, cable in outputs})) or "none"
     available_inputs = ", ".join(sorted({cable for _, cable in inputs})) or "none"
@@ -318,7 +339,7 @@ def _resolve_virtual_cable_pair() -> tuple[AudioDevice, AudioDevice]:
     )
 
 
-def _resolve_remote_cable_pair() -> tuple[AudioDevice, AudioDevice]:
+def _resolve_remote_cable_pair(devices: list[AudioDevice] | None = None) -> tuple[AudioDevice, AudioDevice]:
     """The second cable, which carries the remote party's audio: (playback, recording).
 
     The meeting app's speaker plays into CABLE-B's playback endpoint, and the
@@ -326,10 +347,11 @@ def _resolve_remote_cable_pair() -> tuple[AudioDevice, AudioDevice]:
     different pair is left for the outbound direction; otherwise both directions
     would share one cable and each would capture the other's audio.
     """
-    outputs = _standard_cable_devices(list_devices("output"), "output")
-    inputs = _standard_cable_devices(list_devices("input"), "input")
+    devices = list_devices() if devices is None else devices
+    outputs = _standard_cable_devices(_devices_for_kind(devices, "output"), "output")
+    inputs = _standard_cable_devices(_devices_for_kind(devices, "input"), "input")
 
-    pairs = _complete_cable_pairs(outputs, inputs)
+    pairs = dict(_complete_cable_pairs(outputs, inputs))
     remote = pairs.get(_REMOTE_CABLE_IDENTITY)
     outbound_identity = next(iter(pairs), None)
     if remote is None or outbound_identity == _REMOTE_CABLE_IDENTITY:
@@ -345,15 +367,13 @@ def _resolve_remote_cable_pair() -> tuple[AudioDevice, AudioDevice]:
 def _complete_cable_pairs(
     outputs: list[tuple[AudioDevice, str]],
     inputs: list[tuple[AudioDevice, str]],
-) -> dict[str, tuple[AudioDevice, AudioDevice]]:
+) -> Iterator[tuple[str, tuple[AudioDevice, AudioDevice]]]:
     """Complete (playback, recording) pairs by identity, in outbound priority order."""
-    pairs: dict[str, tuple[AudioDevice, AudioDevice]] = {}
     for identity in _OUTBOUND_CABLE_PRIORITY:
         matching_outputs = [device for device, cable in outputs if cable == identity]
         matching_inputs = [device for device, cable in inputs if cable == identity]
         if matching_outputs and matching_inputs:
-            pairs[identity] = (_preferred_device(matching_outputs), _preferred_device(matching_inputs))
-    return pairs
+            yield identity, (_preferred_device(matching_outputs), _preferred_device(matching_inputs))
 
 
 def _standard_cable_devices(

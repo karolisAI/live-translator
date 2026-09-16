@@ -145,13 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="also check the inbound direction converse derives from this profile: "
         "second cable in, headset out, feedback-loop guard, translation and voice",
     )
-    doctor.add_argument("--inbound-target-language", choices=("en", "de"), default=None,
-                        help="language heard through the headset (default: en); derived inbound only")
-    doctor.add_argument(
-        "--their-language",
-        default=None,
-        help="remote party's language for --inbound (default: the profile's target language)",
-    )
+    add_inbound_language_options(doctor)
     doctor.set_defaults(func=cmd_doctor)
 
     prepare = subparsers.add_parser(
@@ -259,14 +253,7 @@ def build_parser() -> argparse.ArgumentParser:
         "it from the outbound profile (second cable CABLE-B in, Windows default headset out)",
     )
     converse.add_argument("--inbound-profile", default=None, help="profile name for the inbound direction")
-    converse.add_argument("--inbound-target-language", choices=("en", "de"), default=None,
-                        help="language heard through the headset (default: en); derived inbound only")
-    converse.add_argument(
-        "--their-language",
-        default=None,
-        help="remote party's language for a derived inbound direction "
-        "(default: the outbound profile's target language)",
-    )
+    add_inbound_language_options(converse)
     converse.add_argument(
         "--show-text",
         action="store_true",
@@ -276,6 +263,18 @@ def build_parser() -> argparse.ArgumentParser:
     converse.set_defaults(func=cmd_converse)
 
     return parser
+
+
+def add_inbound_language_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--inbound-target-language", choices=("en", "de"), default=None,
+        help="language heard through the headset (default: en); derived inbound only",
+    )
+    parser.add_argument(
+        "--their-language", default=None,
+        help="remote party's language for a derived inbound direction "
+        "(default: the outbound profile's target language)",
+    )
 
 
 def add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -690,7 +689,6 @@ def cmd_route_test(args: argparse.Namespace) -> int:
         output_role="translated_output",
         input_role="meeting_input",
     )
-    status = "PASS" if result.passed else "FAIL"
     output_detail = describe_device_selection(
         config.audio.output_device,
         "output",
@@ -701,15 +699,20 @@ def cmd_route_test(args: argparse.Namespace) -> int:
         "input",
         role="meeting_input",
     )
+    _print_route_test_result(result, output_detail, input_detail)
+    if not result.passed:
+        print("The meeting app probably will not hear translated audio on that microphone endpoint.")
+        return 1
+    return 0
+
+
+def _print_route_test_result(result, output_detail: str, input_detail: str) -> None:
+    status = "PASS" if result.passed else "FAIL"
     print(
         f"{status}: {output_detail} -> {input_detail} "
         f"tone_rms={result.tone_rms:.4f} tone_ratio={result.tone_ratio:.2f} "
         f"sample_rate={result.sample_rate}"
     )
-    if not result.passed:
-        print("The meeting app probably will not hear translated audio on that microphone endpoint.")
-        return 1
-    return 0
 
 
 def _route_test_inbound(config, seconds: float) -> int:
@@ -729,14 +732,9 @@ def _route_test_inbound(config, seconds: float) -> int:
         output_role="remote_playback",
         input_role="remote_input",
     )
-    status = "PASS" if result.passed else "FAIL"
     output_detail = describe_device_selection("auto", "output", role="remote_playback")
     input_detail = describe_device_selection("auto", "input", role="remote_input")
-    print(
-        f"{status}: {output_detail} -> {input_detail} "
-        f"tone_rms={result.tone_rms:.4f} tone_ratio={result.tone_ratio:.2f} "
-        f"sample_rate={result.sample_rate}"
-    )
+    _print_route_test_result(result, output_detail, input_detail)
     if not result.passed:
         print("The inbound direction probably will not hear meeting audio played into the second cable.")
         return 1

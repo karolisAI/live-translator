@@ -10,7 +10,7 @@ from live_translator.audio.devices import (
     DeviceKind,
     DeviceRole,
     list_devices,
-    resolve_device_index,
+    resolve_device,
 )
 from live_translator.config import AppConfig, validate_config
 from live_translator.defaults import DEFAULT_ASR_ENGINE, DEFAULT_ASR_MODEL
@@ -110,8 +110,9 @@ def wire_inbound_devices(inbound: AppConfig) -> AppConfig:
     and audio.output_device with the outbound roles, where "auto" would mean the
     physical microphone and the outbound cable.
     """
-    capture = _auto_device_name("input", "remote_input")
-    headset = _auto_device_name("output", "headset_output")
+    devices = list_devices()
+    capture = _auto_device_name("input", "remote_input", devices)
+    headset = _auto_device_name("output", "headset_output", devices)
     return replace(
         inbound,
         audio=replace(
@@ -123,9 +124,10 @@ def wire_inbound_devices(inbound: AppConfig) -> AppConfig:
     )
 
 
-def _auto_device_name(kind: DeviceKind, role: DeviceRole) -> str:
-    index = resolve_device_index("auto", kind, role=role)
-    return next(device.name for device in list_devices(kind) if device.index == index)
+def _auto_device_name(kind: DeviceKind, role: DeviceRole, devices: list[AudioDevice]) -> str:
+    device = resolve_device("auto", kind, role=role, devices=devices)
+    assert device is not None
+    return device.name
 
 
 def write_meeting_profile(

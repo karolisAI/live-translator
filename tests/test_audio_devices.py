@@ -451,6 +451,18 @@ class InboundRouteGuardTests(unittest.TestCase):
                 inbound_output=inbound_output,
             )
 
+    def test_route_guard_uses_one_inventory_for_all_endpoints(self) -> None:
+        with patch(
+            "live_translator.audio.devices.list_devices",
+            return_value=[*self.INPUTS, *self.OUTPUTS],
+        ) as enumerate_devices:
+            check_inbound_route(
+                outbound_output="auto",
+                inbound_input="CABLE-B Output (VB-Audio Virtual Cable B)",
+                inbound_output="Headphones (Jabra Evolve2 65)",
+            )
+        enumerate_devices.assert_called_once_with()
+
     def test_second_cable_in_and_headset_out_is_accepted(self) -> None:
         self._check(
             outbound_output="CABLE-A Input (VB-Audio Virtual Cable A)",
