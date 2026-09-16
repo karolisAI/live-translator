@@ -43,12 +43,10 @@ def segment_note_name(number: int) -> str:
 
 
 def session_directory_name(started_at: datetime | None = None) -> str:
-    """A directory per session, because phrase numbers restart at 1.
+    """A timestamp and process ID prefix for a session directory.
 
-    Two meetings sharing a directory means the second one's
-    segment-0001 silently replaces the first one's, and the evidence
-    someone turned capture on to collect is gone. The process id keeps
-    two sessions started in the same second apart.
+    The pipeline uses this prefix with mkdtemp, whose random suffix keeps
+    captures separate even when directions start in the same process and second.
     """
     stamp = (started_at or datetime.now()).strftime("%Y%m%d-%H%M%S")
     return f"{SESSION_PREFIX}-{stamp}-{os.getpid()}"

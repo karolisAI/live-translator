@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import mkdtemp
 from threading import Event, Thread
 from time import perf_counter
 
 from live_translator.asr import AsrEngine, TranscriptResult, create_asr
 from live_translator.audio.analysis import analyze_audio, has_enough_audio_energy
-from live_translator.audio.devices import describe_device_selection
+from live_translator.audio.devices import (
+    describe_device_index,
+    describe_device_selection,
+    is_virtual_device,
+    resolve_device_index,
+)
 from live_translator.audio.io import play_mono, record_mono, write_wav
 from live_translator.audio.rolling import RollingSpeechChunker
 from live_translator.config import AppConfig
@@ -548,8 +554,10 @@ class LocalTranslatorPipeline:
 
         try:
             root = resolve_capture_dir(settings, debug_audio_dir)
-            capture_dir = root / session_directory_name()
-            capture_dir.mkdir(parents=True, exist_ok=True)
+            root.mkdir(parents=True, exist_ok=True)
+            # Directions share a PID and start together; create atomically unique
+            # session directories while retaining the retention/purge layout.
+            capture_dir = Path(mkdtemp(prefix=session_directory_name() + "-", dir=root))
         except (OSError, ValueError) as exc:
             print(
                 f"Diagnostic capture could not start: {exc}. "
@@ -655,13 +663,20 @@ class LocalTranslatorPipeline:
 
     def _print_audio_route(self) -> None:
         print(f"{self._line_prefix()}Audio routing:")
+        input_index = resolve_device_index(
+            self._config.audio.input_device,
+            "input",
+            role="physical_input",
+        )
+        # Label the capture device by what it is: the inbound direction of a
+        # conversation captures the remote party from a virtual cable, not a
+        # microphone, so "Physical microphone" would be wrong there.
+        input_label = (
+            "Remote party audio:" if is_virtual_device(input_index, "input") else "Physical microphone:"
+        )
         print(
-            f"{self._line_prefix()}  Physical microphone: "
-            + describe_device_selection(
-                self._config.audio.input_device,
-                "input",
-                role="physical_input",
-            )
+            f"{self._line_prefix()}  {input_label:20} "
+            + describe_device_index(input_index, "input")
         )
         if self._config.audio.output_device:
             print(

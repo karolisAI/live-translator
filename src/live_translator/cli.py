@@ -11,6 +11,7 @@ from live_translator.asr.model_store import download_model, model_dir, verify_lo
 from live_translator.audio.route_test import test_output_to_input_route
 from live_translator.audio.devices import (
     DeviceRole,
+    check_inbound_route,
     describe_device_selection,
     print_devices,
     probe_devices,
@@ -29,6 +30,8 @@ from live_translator.mt import TranslationEngine
 from live_translator.mt.argos_packages import install_argos_package, print_installed_argos_packages
 from live_translator.pipeline import LocalTranslatorPipeline
 from live_translator.profiles import SUPPORTED_DIRECTIONS, prompt_for_device, write_meeting_profile
+from live_translator.profiles import inbound_config as derive_inbound_config
+from live_translator.profiles import validate_inbound_config, wire_inbound_devices
 from live_translator.runtime import default_profile_path
 from live_translator.session import BidirectionalSession, Direction
 from live_translator.tts import TtsSpeaker
@@ -107,6 +110,13 @@ def build_parser() -> argparse.ArgumentParser:
     route.add_argument("--config", default=None, help="YAML config file")
     route.add_argument("--meeting-microphone-device", default=None, help="override audio.peer_input_device")
     route.add_argument("--seconds", type=float, default=1.0)
+    route.add_argument(
+        "--inbound",
+        action="store_true",
+        help="test the second cable instead: play a tone into CABLE-B Input, as the meeting "
+        "app will, and listen on CABLE-B Output. Tests the automatic cable pair only, "
+        "not explicit inbound profiles or headset playback",
+    )
     route.set_defaults(func=cmd_route_test)
 
     purge = subparsers.add_parser(
@@ -131,6 +141,13 @@ def build_parser() -> argparse.ArgumentParser:
         "model directory, without downloading; translation and voice are "
         "checked by any profile validation",
     )
+    doctor.add_argument(
+        "--inbound",
+        action="store_true",
+        help="also check the inbound direction converse derives from this profile: "
+        "second cable in, headset out, feedback-loop guard, translation and voice",
+    )
+    add_inbound_language_options(doctor)
     doctor.set_defaults(func=cmd_doctor)
 
     prepare = subparsers.add_parser(
@@ -231,8 +248,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     converse.add_argument("--outbound-config", default=None, help="explicit config path for the outbound direction")
     converse.add_argument("--outbound-profile", default=None, help="profile name for the outbound direction")
-    converse.add_argument("--inbound-config", default=None, help="explicit config path for the inbound direction")
+    converse.add_argument(
+        "--inbound-config",
+        default=None,
+        help="explicit config path for the inbound direction; omit both inbound options to derive "
+        "it from the outbound profile (second cable CABLE-B in, Windows default headset out)",
+    )
     converse.add_argument("--inbound-profile", default=None, help="profile name for the inbound direction")
+    add_inbound_language_options(converse)
     converse.add_argument(
         "--show-text",
         action="store_true",
@@ -242,6 +265,18 @@ def build_parser() -> argparse.ArgumentParser:
     converse.set_defaults(func=cmd_converse)
 
     return parser
+
+
+def add_inbound_language_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--inbound-target-language", choices=("en", "de"), default=None,
+        help="language heard through the headset (default: en); derived inbound only",
+    )
+    parser.add_argument(
+        "--their-language", default=None,
+        help="remote party's language for a derived inbound direction "
+        "(default: the outbound profile's target language)",
+    )
 
 
 def add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -349,6 +384,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "--prepare-models needs a profile to know which model to check; "
             "pass --profile <name> or --config <path>."
         )
+    inbound = getattr(args, "inbound", False)
+    if inbound and config_path is None:
+        raise ValueError(
+            "--inbound needs a profile to derive the inbound direction from; "
+            "pass --profile <name> or --config <path>."
+        )
 
     checks = [
         ("numpy", "audio arrays", True),
@@ -374,6 +415,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         config_ok = _print_config_checks(
             load_config(config_path),
             prepare_models=args.prepare_models,
+            inbound=inbound,
+            their_language=getattr(args, "their_language", None),
+            inbound_target_language=getattr(args, "inbound_target_language", None) or "en",
         )
     if missing_required:
         print("Install required packages with: python -m pip install -e .")
@@ -391,7 +435,14 @@ def _doctor_config_path(args: argparse.Namespace) -> Path | None:
     return None
 
 
-def _print_config_checks(config, *, prepare_models: bool) -> bool:
+def _print_config_checks(
+    config,
+    *,
+    prepare_models: bool,
+    inbound: bool = False,
+    their_language: str | None = None,
+    inbound_target_language: str = "en",
+) -> bool:
     checks: list[tuple[str, Callable[[], str]]] = [
         (
             "audio.input",
@@ -441,6 +492,8 @@ def _print_config_checks(config, *, prepare_models: bool) -> bool:
 
     checks.append(("translation", prepare_translation))
     checks.append(("speech.output", validate_tts))
+    if inbound:
+        checks.extend(_inbound_checks(config, their_language, inbound_target_language))
     if prepare_models:
         checks.append(("speech.model", lambda: _prepare_asr_model(config)))
 
@@ -457,6 +510,61 @@ def _print_config_checks(config, *, prepare_models: bool) -> bool:
     if not prepare_models:
         print(f"{'INFO':7} {'speech.model':16} run doctor with --prepare-models before a demo")
     return passed
+
+
+def _inbound_checks(config, their_language: str | None, target_language: str = "en") -> list[tuple[str, Callable[[], str]]]:
+    """Checks for the inbound direction that converse derives from this profile.
+
+    The first check derives the direction and runs the feedback-loop guard; the
+    rest reuse its result and report as skipped if it failed, so a machine
+    without the second cable gets one clear reason instead of five.
+    """
+    derived: list[AppConfig] = []
+
+    def route() -> str:
+        inbound = wire_inbound_devices(derive_inbound_config(config, their_language, target_language))
+        check_inbound_route(
+            outbound_output=config.audio.output_device,
+            inbound_input=inbound.audio.input_device,
+            inbound_output=inbound.audio.output_device,
+        )
+        derived.append(inbound)
+        return "second cable in, headset out, no feedback loop"
+
+    def derived_config() -> AppConfig:
+        if not derived:
+            raise ValueError("skipped: inbound.route failed")
+        return derived[0]
+
+    def translation() -> str:
+        settings = derived_config().translation
+        TranslationEngine(settings).prepare()
+        return f"{settings.engine} {settings.source_language}->{settings.target_language}"
+
+    def voice() -> str:
+        inbound = derived_config()
+        TtsSpeaker(inbound.tts, inbound.audio).validate()
+        return f"{inbound.tts.engine} {inbound.tts.model_path}"
+
+    # Devices are probed with the roles the pipeline opens them with, the same
+    # choice check_inbound_route makes.
+    return [
+        ("inbound.route", route),
+        (
+            "inbound.input",
+            lambda: _audio_device_detail(
+                derived_config().audio.input_device, "input", config.audio.sample_rate, "physical_input"
+            ),
+        ),
+        (
+            "inbound.output",
+            lambda: _audio_device_detail(
+                derived_config().audio.output_device, "output", config.audio.sample_rate, "translated_output"
+            ),
+        ),
+        ("inbound.mt", translation),
+        ("inbound.speech", voice),
+    ]
 
 
 def _audio_device_detail(
@@ -568,6 +676,11 @@ def cmd_route_test(args: argparse.Namespace) -> int:
     if args.config is None:
         args.config = str(default_profile_path(args.profile))
     config = build_config(args)
+    if getattr(args, "inbound", False):
+        if args.meeting_microphone_device:
+            raise ValueError("--meeting-microphone-device applies only to the outbound route test; "
+                             "--inbound tests the automatic CABLE-B pair.")
+        return _route_test_inbound(config, args.seconds)
     meeting_input = args.meeting_microphone_device or config.audio.peer_input_device
     if not meeting_input:
         raise ValueError("Set audio.peer_input_device in the profile or pass --meeting-microphone-device.")
@@ -579,8 +692,9 @@ def cmd_route_test(args: argparse.Namespace) -> int:
         input_device=meeting_input,
         sample_rate=config.audio.sample_rate,
         duration_seconds=args.seconds,
+        output_role="translated_output",
+        input_role="meeting_input",
     )
-    status = "PASS" if result.passed else "FAIL"
     output_detail = describe_device_selection(
         config.audio.output_device,
         "output",
@@ -591,13 +705,44 @@ def cmd_route_test(args: argparse.Namespace) -> int:
         "input",
         role="meeting_input",
     )
+    _print_route_test_result(result, output_detail, input_detail)
+    if not result.passed:
+        print("The meeting app probably will not hear translated audio on that microphone endpoint.")
+        return 1
+    return 0
+
+
+def _print_route_test_result(result, output_detail: str, input_detail: str) -> None:
+    status = "PASS" if result.passed else "FAIL"
     print(
         f"{status}: {output_detail} -> {input_detail} "
         f"tone_rms={result.tone_rms:.4f} tone_ratio={result.tone_ratio:.2f} "
         f"sample_rate={result.sample_rate}"
     )
+
+
+def _route_test_inbound(config, seconds: float) -> int:
+    """Play a tone into the second cable as the meeting app will; listen where inbound captures.
+
+    In a meeting the app's speaker plays into CABLE-B Input and the inbound
+    direction records CABLE-B Output, so this checks that exact route the same
+    way the outbound test checks CABLE Input to CABLE Output.
+    """
+    print("Checking the automatic CABLE-B pair only; explicit inbound profiles and "
+          "headset playback are not validated by this test.")
+    result = test_output_to_input_route(
+        output_device="auto",
+        input_device="auto",
+        sample_rate=config.audio.sample_rate,
+        duration_seconds=seconds,
+        output_role="remote_playback",
+        input_role="remote_input",
+    )
+    output_detail = describe_device_selection("auto", "output", role="remote_playback")
+    input_detail = describe_device_selection("auto", "input", role="remote_input")
+    _print_route_test_result(result, output_detail, input_detail)
     if not result.passed:
-        print("The meeting app probably will not hear translated audio on that microphone endpoint.")
+        print("The inbound direction probably will not hear meeting audio played into the second cable.")
         return 1
     return 0
 
@@ -665,11 +810,31 @@ def cmd_loopback(args: argparse.Namespace) -> int:
 
 def cmd_converse(args: argparse.Namespace) -> int:
     outbound_config = _resolve_direction_config(args.outbound_config, args.outbound_profile, "outbound")
-    inbound_config = _resolve_direction_config(args.inbound_config, args.inbound_profile, "inbound")
+    if args.inbound_config or args.inbound_profile:
+        if args.their_language or args.inbound_target_language:
+            raise ValueError(
+                "--their-language and --inbound-target-language only apply to a derived inbound direction; "
+                "drop it or drop --inbound-config/--inbound-profile"
+            )
+        inbound_config = _resolve_direction_config(args.inbound_config, args.inbound_profile, "inbound")
+    else:
+        inbound_config = wire_inbound_devices(
+            derive_inbound_config(outbound_config, args.their_language, args.inbound_target_language or "en")
+        )
+    # Before anything is loaded or opened: an inbound route that plays into the
+    # meeting's cable, or captures a microphone or the outbound cable, would loop
+    # audio back into the call. This applies to explicit inbound profiles too.
+    check_inbound_route(
+        outbound_output=outbound_config.audio.output_device,
+        inbound_input=inbound_config.audio.input_device,
+        inbound_output=inbound_config.audio.output_device,
+    )
+    if args.inbound_config or args.inbound_profile:
+        validate_inbound_config(inbound_config)
 
     directions = [
-        _build_direction(outbound_config, args),
-        _build_direction(inbound_config, args),
+        _build_direction(outbound_config, args, role="Outbound"),
+        _build_direction(inbound_config, args, role="Inbound"),
     ]
     # Initialise PortAudio on the main thread first: each direction opens its
     # streams from its own worker thread, and PortAudio's first-time init is not
@@ -719,11 +884,13 @@ def _resolve_direction_config(config_path: str | None, profile: str | None, role
     return load_config(path)
 
 
-def _build_direction(config, args: argparse.Namespace) -> Direction:
+def _build_direction(config, args: argparse.Namespace, *, role: str = "") -> Direction:
     label = (
         f"{config.translation.source_language.upper()}->"
         f"{config.translation.target_language.upper()}"
     )
+    if role:
+        label = f"{role} {label}"
     pipeline = LocalTranslatorPipeline(config)
     return Direction(
         label=label,

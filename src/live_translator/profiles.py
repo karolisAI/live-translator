@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from live_translator.audio.devices import AudioDevice, list_devices
+from live_translator.audio.devices import (
+    AudioDevice,
+    DeviceKind,
+    DeviceRole,
+    list_devices,
+    resolve_device,
+)
+from live_translator.config import AppConfig, validate_config
 from live_translator.defaults import DEFAULT_ASR_ENGINE, DEFAULT_ASR_MODEL
 from live_translator.errors import MissingDependency
-from live_translator.runtime import default_profile_path
+from live_translator.runtime import default_profile_path, resolve_trusted_path
 
 
 SUPPORTED_DIRECTIONS = ("en-de", "de-en")
@@ -25,6 +34,100 @@ DIRECTION_SETTINGS: dict[str, dict[str, Any]] = {
         "tts_model": "models/tts/en_US-hfc_male-medium.onnx",
     },
 }
+
+INBOUND_TARGET_LANGUAGE = "en"
+
+
+def inbound_config(outbound: AppConfig, their_language: str | None = None, target_language: str = INBOUND_TARGET_LANGUAGE) -> AppConfig:
+    """The inbound direction's config: the outbound direction with languages reversed.
+
+    The remote party speaks `their_language` (by default, the language the
+    outbound direction translates into) and target_language selects what the user hears (English by default).
+    Recognition and translation share the source language; Piper uses the
+    bundled voice for the selected target language.
+
+    Engines, model, thread count, chunking and queue settings are copied from the
+    outbound config, so both directions run the same stack. The audio section is
+    copied unchanged: the inbound capture and headset devices are wired
+    separately and must be set before this config is run.
+    """
+    language = (their_language or outbound.translation.target_language).lower()
+    direction = f"{language}-{target_language.lower()}"
+    if direction not in DIRECTION_SETTINGS:
+        raise ValueError(
+            f"Unsupported remote language direction '{direction}'. "
+            f"Use one of: {', '.join(SUPPORTED_DIRECTIONS)}"
+        )
+
+    settings = DIRECTION_SETTINGS[direction]
+    inbound = replace(
+        outbound,
+        asr=replace(outbound.asr, source_language=settings["asr_language"]),
+        translation=replace(
+            outbound.translation,
+            source_language=settings["source_language"],
+            target_language=settings["target_language"],
+        ),
+        tts=replace(outbound.tts, model_path=settings["tts_model"]),
+    )
+    validate_config(inbound)
+    return inbound
+
+
+def validate_inbound_config(inbound: AppConfig) -> None:
+    """Check an explicit inbound profile is consistent with itself.
+
+    A supported direction, recognition in its translation source language, and a
+    Piper voice in its target language. It is deliberately not compared with the
+    outbound direction, since --inbound-target-language lets both differ.
+    """
+    source = inbound.translation.source_language.lower()
+    target = inbound.translation.target_language.lower()
+    if f"{source}-{target}" not in DIRECTION_SETTINGS:
+        raise ValueError(f"Unsupported inbound direction '{source}-{target}'.")
+    if (inbound.asr.source_language or "").lower() != source:
+        raise ValueError(f"Inbound recognition must use {source}, matching translation.source_language.")
+    voice_name = {"en": "English", "de": "German"}[target]
+    if inbound.tts.engine.lower() not in {"piper", "piper-cli"}:
+        raise ValueError(f"Inbound speech requires a {voice_name} Piper voice.")
+    if not inbound.tts.model_path:
+        raise ValueError("tts.model_path is required for the inbound Piper voice.")
+    model = resolve_trusted_path(inbound.tts.model_path)
+    metadata_path = resolve_trusted_path(model.with_suffix(".onnx.json"))
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    language = metadata.get("language", {}) if isinstance(metadata, dict) else {}
+    code = language.get("code", "") if isinstance(language, dict) else ""
+    if not isinstance(code, str) or code.lower().replace("-", "_").split("_")[0] != target:
+        raise ValueError(f"Inbound speech requires a {voice_name} Piper voice (language.code in its metadata).")
+
+
+def wire_inbound_devices(inbound: AppConfig) -> AppConfig:
+    """Point the inbound direction at the second cable and the user's headset.
+
+    Capture is the recording end of CABLE-B, where the meeting app's speaker is
+    routed; playback is Windows' default headset or speakers. Both are resolved
+    to concrete device names here because the pipeline reads audio.input_device
+    and audio.output_device with the outbound roles, where "auto" would mean the
+    physical microphone and the outbound cable.
+    """
+    devices = list_devices()
+    capture = _auto_device_name("input", "remote_input", devices)
+    headset = _auto_device_name("output", "headset_output", devices)
+    return replace(
+        inbound,
+        audio=replace(
+            inbound.audio,
+            input_device=capture,
+            output_device=headset,
+            peer_input_device=None,
+        ),
+    )
+
+
+def _auto_device_name(kind: DeviceKind, role: DeviceRole, devices: list[AudioDevice]) -> str:
+    device = resolve_device("auto", kind, role=role, devices=devices)
+    assert device is not None
+    return device.name
 
 
 def write_meeting_profile(

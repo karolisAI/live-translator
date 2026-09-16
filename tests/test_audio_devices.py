@@ -4,6 +4,8 @@ from unittest.mock import patch
 
 from live_translator.audio.devices import (
     AudioDevice,
+    check_inbound_route,
+    is_virtual_device,
     resolve_device_index,
 )
 
@@ -38,8 +40,8 @@ def _output_device(
     )
 
 
-def _default_sounddevice(input_index: int) -> SimpleNamespace:
-    return SimpleNamespace(default=SimpleNamespace(device=(input_index, -1)))
+def _default_sounddevice(input_index: int, output_index: int = -1) -> SimpleNamespace:
+    return SimpleNamespace(default=SimpleNamespace(device=(input_index, output_index)))
 
 
 def _inventory(
@@ -201,6 +203,189 @@ class AudioDeviceSelectionTests(unittest.TestCase):
         self.assertEqual(translated, 7)
         self.assertEqual(meeting, 8)
 
+    def test_auto_remote_input_selects_cable_b_recording_endpoint(self) -> None:
+        output_devices = [
+            _output_device(26, "CABLE-A Input (VB-Audio Virtual Cable A)"),
+            _output_device(24, "CABLE-B Input (VB-Audio Virtual Cable B)"),
+        ]
+        input_devices = [
+            _input_device(33, "CABLE-A Output (VB-Audio Virtual Cable A)"),
+            _input_device(5, "CABLE-B Output (VB-Audio Virtual Cable B)", "MME"),
+            _input_device(31, "CABLE-B Output (VB-Audio Virtual Cable B)"),
+        ]
+
+        inventory = _inventory(inputs=input_devices, outputs=output_devices)
+        with patch("live_translator.audio.devices.list_devices", side_effect=inventory):
+            remote = resolve_device_index("auto", "input", role="remote_input")
+        with patch("live_translator.audio.devices.list_devices", side_effect=inventory):
+            meeting = resolve_device_index("auto", "input", role="meeting_input")
+
+        self.assertEqual(remote, 31)
+        self.assertEqual(meeting, 33)
+
+    def test_auto_remote_input_leaves_unlettered_cable_for_outbound(self) -> None:
+        output_devices = [
+            _output_device(7, "CABLE Input (VB-Audio Virtual Cable)"),
+            _output_device(24, "CABLE-B Input (VB-Audio Virtual Cable B)"),
+        ]
+        input_devices = [
+            _input_device(8, "CABLE Output (VB-Audio Virtual Cable)"),
+            _input_device(31, "CABLE-B Output (VB-Audio Virtual Cable B)"),
+        ]
+
+        inventory = _inventory(inputs=input_devices, outputs=output_devices)
+        with patch("live_translator.audio.devices.list_devices", side_effect=inventory):
+            remote = resolve_device_index("auto", "input", role="remote_input")
+        with patch("live_translator.audio.devices.list_devices", side_effect=inventory):
+            translated = resolve_device_index("auto", "output", role="translated_output")
+
+        self.assertEqual(remote, 31)
+        self.assertEqual(translated, 7)
+
+    def test_auto_remote_playback_selects_cable_b_playback_endpoint(self) -> None:
+        output_devices = [
+            _output_device(26, "CABLE-A Input (VB-Audio Virtual Cable A)"),
+            _output_device(12, "CABLE-B Input (VB-Audio Virtual Cable B)", "MME"),
+            _output_device(24, "CABLE-B Input (VB-Audio Virtual Cable B)"),
+        ]
+        input_devices = [
+            _input_device(33, "CABLE-A Output (VB-Audio Virtual Cable A)"),
+            _input_device(31, "CABLE-B Output (VB-Audio Virtual Cable B)"),
+        ]
+
+        with patch(
+            "live_translator.audio.devices.list_devices",
+            side_effect=_inventory(inputs=input_devices, outputs=output_devices),
+        ):
+            playback = resolve_device_index("auto", "output", role="remote_playback")
+
+        self.assertEqual(playback, 24)
+
+    def test_auto_remote_playback_requires_a_second_cable(self) -> None:
+        with patch(
+            "live_translator.audio.devices.list_devices",
+            side_effect=_inventory(
+                inputs=[_input_device(8, "CABLE Output (VB-Audio Virtual Cable)")],
+                outputs=[_output_device(7, "CABLE Input (VB-Audio Virtual Cable)")],
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "second virtual cable"):
+                resolve_device_index("auto", "output", role="remote_playback")
+
+    def test_auto_remote_input_requires_a_second_cable(self) -> None:
+        single_cable_inventories = {
+            "unlettered only": (
+                [_input_device(8, "CABLE Output (VB-Audio Virtual Cable)")],
+                [_output_device(7, "CABLE Input (VB-Audio Virtual Cable)")],
+            ),
+            # With no other pair, the outbound direction already falls back to
+            # CABLE-B, so the inbound direction must not share it.
+            "cable B only": (
+                [_input_device(31, "CABLE-B Output (VB-Audio Virtual Cable B)")],
+                [_output_device(24, "CABLE-B Input (VB-Audio Virtual Cable B)")],
+            ),
+        }
+
+        for label, (inputs, outputs) in single_cable_inventories.items():
+            with (
+                self.subTest(label),
+                patch(
+                    "live_translator.audio.devices.list_devices",
+                    side_effect=_inventory(inputs=inputs, outputs=outputs),
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "second virtual cable"):
+                    resolve_device_index("auto", "input", role="remote_input")
+
+    def test_unlettered_vb_audio_point_is_not_a_cable_endpoint(self) -> None:
+        # VBMatrix names this endpoint without a trailing letter, so it has no
+        # space after "Point"; it must still not complete the default cable pair.
+        output_devices = [_output_device(7, "CABLE Input (VB-Audio Virtual Cable)")]
+        input_devices = [_input_device(92, "CABLE Output (VB-Audio Point)", "Windows WDM-KS")]
+
+        with patch(
+            "live_translator.audio.devices.list_devices",
+            side_effect=_inventory(inputs=input_devices, outputs=output_devices),
+        ):
+            with self.assertRaisesRegex(ValueError, "No complete standard VB-CABLE"):
+                resolve_device_index("auto", "input", role="meeting_input")
+
+    def test_point_endpoint_without_the_vb_audio_brand_is_not_a_cable(self) -> None:
+        # A Point or mixer-bus endpoint named another way must stay excluded too.
+        output_devices = [_output_device(7, "CABLE Input (VB-Audio Virtual Cable)")]
+        input_devices = [_input_device(93, "CABLE Output (Point 3)")]
+
+        with patch(
+            "live_translator.audio.devices.list_devices",
+            side_effect=_inventory(inputs=input_devices, outputs=output_devices),
+        ):
+            with self.assertRaisesRegex(ValueError, "No complete standard VB-CABLE"):
+                resolve_device_index("auto", "input", role="meeting_input")
+
+    def test_auto_headset_output_maps_windows_default_to_its_wasapi_endpoint(self) -> None:
+        devices = [
+            _output_device(7, "CABLE Input (VB-Audio Virtual Cable)"),
+            _output_device(3, "Headphones (Jabra Evolve2 65)", "MME"),
+            _output_device(44, "Speakers (AMD Audio Device)"),
+            _output_device(40, "Headphones (Jabra Evolve2 65)"),
+        ]
+
+        with (
+            patch("live_translator.audio.devices.list_devices", return_value=devices),
+            patch(
+                "live_translator.audio.devices._sounddevice",
+                return_value=_default_sounddevice(-1, output_index=3),
+            ),
+        ):
+            selected = resolve_device_index("auto", "output", role="headset_output")
+
+        self.assertEqual(selected, 40)
+
+    def test_auto_headset_output_rejects_a_virtual_default_output(self) -> None:
+        virtual_defaults = {
+            "vb-cable": _output_device(7, "CABLE Input (VB-Audio Virtual Cable)"),
+            "vbmatrix point": _output_device(8, "Input (VBMatrix Point 2)"),
+        }
+
+        for label, virtual in virtual_defaults.items():
+            devices = [virtual, _output_device(40, "Headphones (Jabra Evolve2 65)")]
+            with (
+                self.subTest(label),
+                patch("live_translator.audio.devices.list_devices", return_value=devices),
+                patch(
+                    "live_translator.audio.devices._sounddevice",
+                    return_value=_default_sounddevice(-1, output_index=virtual.index),
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "default output .* is virtual"):
+                    resolve_device_index("auto", "output", role="headset_output")
+
+    def test_auto_headset_output_requires_a_default_output(self) -> None:
+        devices = [_output_device(40, "Headphones (Jabra Evolve2 65)")]
+
+        with (
+            patch("live_translator.audio.devices.list_devices", return_value=devices),
+            patch(
+                "live_translator.audio.devices._sounddevice",
+                return_value=_default_sounddevice(-1, output_index=-1),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "no default output device"):
+                resolve_device_index("auto", "output", role="headset_output")
+
+    def test_is_virtual_device_judges_the_resolved_endpoint(self) -> None:
+        devices = [
+            _input_device(31, "CABLE-B Output (VB-Audio Virtual Cable B)"),
+            _input_device(30, "Microphone (Jabra Evolve2 65)"),
+        ]
+
+        with patch("live_translator.audio.devices.list_devices", return_value=devices):
+            self.assertTrue(is_virtual_device(31, "input"))
+            self.assertFalse(is_virtual_device(30, "input"))
+            # The Windows default and an index no longer present are unknown, not virtual.
+            self.assertFalse(is_virtual_device(None, "input"))
+            self.assertFalse(is_virtual_device(99, "input"))
+
     def test_auto_input_without_role_defaults_to_physical_input(self) -> None:
         devices = [_input_device(30, "Microphone (USB Headset)")]
 
@@ -239,6 +424,160 @@ class AudioDeviceSelectionTests(unittest.TestCase):
 
         self.assertIn("[30] Microphone (USB Headset)", str(error.exception))
         self.assertIn("[32] Microphone Array (AMD Audio Device)", str(error.exception))
+
+
+class InboundRouteGuardTests(unittest.TestCase):
+    OUTPUTS = [
+        _output_device(26, "CABLE-A Input (VB-Audio Virtual Cable A)"),
+        _output_device(9, "CABLE-A Input (VB-Audio Virtual Cable A)", "MME"),
+        _output_device(24, "CABLE-B Input (VB-Audio Virtual Cable B)"),
+        _output_device(40, "Headphones (Jabra Evolve2 65)"),
+        _output_device(3, "Headphones (Jabra Evolve2 65)", "MME"),
+    ]
+    INPUTS = [
+        _input_device(33, "CABLE-A Output (VB-Audio Virtual Cable A)"),
+        _input_device(31, "CABLE-B Output (VB-Audio Virtual Cable B)"),
+        _input_device(30, "Microphone (Jabra Evolve2 65)"),
+    ]
+
+    def _check(self, *, outbound_output: str | None, inbound_input: str | None, inbound_output: str | None) -> None:
+        with patch(
+            "live_translator.audio.devices.list_devices",
+            side_effect=_inventory(inputs=self.INPUTS, outputs=self.OUTPUTS),
+        ):
+            check_inbound_route(
+                outbound_output=outbound_output,
+                inbound_input=inbound_input,
+                inbound_output=inbound_output,
+            )
+
+    def test_route_guard_uses_one_inventory_for_all_endpoints(self) -> None:
+        with patch(
+            "live_translator.audio.devices.list_devices",
+            return_value=[*self.INPUTS, *self.OUTPUTS],
+        ) as enumerate_devices:
+            check_inbound_route(
+                outbound_output="auto",
+                inbound_input="CABLE-B Output (VB-Audio Virtual Cable B)",
+                inbound_output="Headphones (Jabra Evolve2 65)",
+            )
+        enumerate_devices.assert_called_once_with()
+
+    def test_second_cable_in_and_headset_out_is_accepted(self) -> None:
+        self._check(
+            outbound_output="CABLE-A Input (VB-Audio Virtual Cable A)",
+            inbound_input="CABLE-B Output (VB-Audio Virtual Cable B)",
+            inbound_output="Headphones (Jabra Evolve2 65)",
+        )
+
+    def test_inbound_output_into_any_virtual_cable_is_refused(self) -> None:
+        for virtual_output in (
+            "CABLE-A Input (VB-Audio Virtual Cable A)",
+            # Same cable, listed under another host API with a different index.
+            "9",
+            "CABLE-B Input (VB-Audio Virtual Cable B)",
+        ):
+            with self.subTest(virtual_output):
+                with self.assertRaisesRegex(ValueError, "is a virtual device"):
+                    self._check(
+                        outbound_output="CABLE-A Input (VB-Audio Virtual Cable A)",
+                        inbound_input="CABLE-B Output (VB-Audio Virtual Cable B)",
+                        inbound_output=virtual_output,
+                    )
+
+    def test_inbound_output_matching_the_outbound_output_is_refused(self) -> None:
+        # Without a cable, e.g. while testing, both directions could name the same
+        # real device; the MME entry "3" is the same endpoint as WASAPI "40".
+        with self.assertRaisesRegex(ValueError, "also the outbound direction's output"):
+            self._check(
+                outbound_output="Headphones (Jabra Evolve2 65)",
+                inbound_input="CABLE-B Output (VB-Audio Virtual Cable B)",
+                inbound_output="3",
+            )
+
+    def test_inbound_input_from_a_microphone_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "not a virtual cable"):
+            self._check(
+                outbound_output="CABLE-A Input (VB-Audio Virtual Cable A)",
+                inbound_input="Microphone (Jabra Evolve2 65)",
+                inbound_output="Headphones (Jabra Evolve2 65)",
+            )
+
+    def test_inbound_input_from_the_outbound_cable_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "records the outbound direction's cable"):
+            self._check(
+                outbound_output="CABLE-A Input (VB-Audio Virtual Cable A)",
+                inbound_input="CABLE-A Output (VB-Audio Virtual Cable A)",
+                inbound_output="Headphones (Jabra Evolve2 65)",
+            )
+
+    def test_auto_inbound_devices_are_judged_as_the_pipeline_opens_them(self) -> None:
+        # The pipeline reads audio.input_device as the physical microphone, so
+        # "auto" there captures the microphone, never CABLE-B.
+        with patch(
+            "live_translator.audio.devices._sounddevice",
+            return_value=_default_sounddevice(30),
+        ):
+            with self.assertRaisesRegex(ValueError, "not a virtual cable"):
+                self._check(
+                    outbound_output="CABLE-A Input (VB-Audio Virtual Cable A)",
+                    inbound_input="auto",
+                    inbound_output="Headphones (Jabra Evolve2 65)",
+                )
+
+    def test_other_virtual_inputs_are_not_accepted_as_cable_b(self) -> None:
+        for name in ("CABLE Output (VB-Audio Virtual Cable)", "VBMatrix Out 2 (VB-Audio Matrix VAIO)"):
+            with self.subTest(name=name):
+                extra = _input_device(99, name)
+                with patch("live_translator.audio.devices.list_devices",
+                           side_effect=_inventory(inputs=self.INPUTS + [extra], outputs=self.OUTPUTS)):
+                    with self.assertRaisesRegex(ValueError, "not CABLE-B"):
+                        check_inbound_route(outbound_output=self.OUTPUTS[0].name,
+                                            inbound_input=name, inbound_output=self.OUTPUTS[3].name)
+
+    def _check_with_windows_default_output(self, default_output_index: int, **route) -> None:
+        with patch(
+            "live_translator.audio.devices._sounddevice",
+            return_value=_default_sounddevice(30, output_index=default_output_index),
+        ):
+            self._check(**route)
+
+    def test_unset_outbound_output_is_judged_as_the_windows_default(self) -> None:
+        # Installing VB-CABLE A+B can make CABLE-B Input the Windows default output.
+        # With no outbound device named, outbound then plays into the cable inbound
+        # records, which must be refused rather than skipped.
+        route = dict(
+            outbound_output=None,
+            inbound_input="CABLE-B Output (VB-Audio Virtual Cable B)",
+            inbound_output="Headphones (Jabra Evolve2 65)",
+        )
+        with self.assertRaisesRegex(ValueError, "records the outbound direction's cable"):
+            self._check_with_windows_default_output(24, **route)
+        # The same headphones through their MME entry are still the same device.
+        with self.assertRaisesRegex(ValueError, "also the outbound direction's output"):
+            self._check_with_windows_default_output(3, **route)
+
+    def test_unset_outbound_output_without_a_windows_default_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot be checked for a feedback loop"):
+            self._check_with_windows_default_output(
+                -1,
+                outbound_output=None,
+                inbound_input="CABLE-B Output (VB-Audio Virtual Cable B)",
+                inbound_output="Headphones (Jabra Evolve2 65)",
+            )
+
+    def test_unset_inbound_devices_are_refused(self) -> None:
+        for inbound_input, inbound_output in (
+            (None, "Headphones (Jabra Evolve2 65)"),
+            ("CABLE-B Output (VB-Audio Virtual Cable B)", None),
+        ):
+            with self.subTest(inbound_input=inbound_input, inbound_output=inbound_output):
+                with self.assertRaisesRegex(ValueError, "needs an explicit"):
+                    self._check(
+                        outbound_output="CABLE-A Input (VB-Audio Virtual Cable A)",
+                        inbound_input=inbound_input,
+                        inbound_output=inbound_output,
+                    )
 
 
 if __name__ == "__main__":

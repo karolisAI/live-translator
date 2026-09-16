@@ -1,16 +1,280 @@
 import io
+import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import yaml
 
 from live_translator.asr.model_store import recorded_revision
+from live_translator.audio.devices import AudioDevice
 from live_translator.cli import build_parser, cmd_prepare_models, main
 from live_translator.defaults import ASR_MODEL_REVISION
+from live_translator.session import BidirectionalSession
+from live_translator.config import AppConfig
+from live_translator.profiles import inbound_config, validate_inbound_config, write_meeting_profile
 from test_model_store import network_blocked, prepare_dir
+
+
+def _converse_device(index: int, name: str, *, inputs: int = 0, outputs: int = 0) -> AudioDevice:
+    return AudioDevice(
+        index=index,
+        name=name,
+        max_input_channels=inputs,
+        max_output_channels=outputs,
+        default_sample_rate=48000.0,
+        host_api="Windows WASAPI",
+    )
+
+
+CONVERSE_DEVICES = [
+    _converse_device(30, "Microphone (Jabra Evolve2 65)", inputs=1),
+    _converse_device(33, "CABLE-A Output (VB-Audio Virtual Cable A)", inputs=2),
+    _converse_device(31, "CABLE-B Output (VB-Audio Virtual Cable B)", inputs=2),
+    _converse_device(26, "CABLE-A Input (VB-Audio Virtual Cable A)", outputs=2),
+    _converse_device(24, "CABLE-B Input (VB-Audio Virtual Cable B)", outputs=2),
+    _converse_device(40, "Headphones (Jabra Evolve2 65)", outputs=2),
+]
+
+
+def _list_converse_devices(kind: str | None = None) -> list[AudioDevice]:
+    if kind == "input":
+        return [device for device in CONVERSE_DEVICES if device.max_input_channels > 0]
+    if kind == "output":
+        return [device for device in CONVERSE_DEVICES if device.max_output_channels > 0]
+    return list(CONVERSE_DEVICES)
+
+
+class ConverseTests(unittest.TestCase):
+    """converse with a real config, real device resolution and the real route guard.
+
+    Only the device inventory, audio start-up, pipelines and the session are
+    faked, so nothing loads models or opens a stream.
+    """
+
+    def _profile(self, temp_dir: str, direction: str) -> Path:
+        return write_meeting_profile(
+            path=Path(temp_dir) / f"{direction}.yaml",
+            direction=direction,
+            microphone_device="auto",
+            translated_output_device="auto",
+            meeting_microphone_device="auto",
+        )
+
+    def _run(self, argv: list[str], *, real_session: bool = False):
+        stderr = io.StringIO()
+        with (
+            patch("live_translator.audio.devices.list_devices", side_effect=_list_converse_devices),
+            # profiles imports list_devices by name, so patch it where it is used too.
+            patch("live_translator.profiles.list_devices", side_effect=_list_converse_devices),
+            patch(
+                "live_translator.audio.devices._sounddevice",
+                # Windows defaults: the Jabra microphone and the Jabra headphones.
+                return_value=SimpleNamespace(default=SimpleNamespace(device=(30, 40))),
+            ),
+            patch("live_translator.cli.ensure_audio_ready"),
+            patch("live_translator.cli.LocalTranslatorPipeline") as pipeline,
+            patch("live_translator.cli.BidirectionalSession",
+                  side_effect=BidirectionalSession if real_session else None) as session,
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(stderr),
+        ):
+            code = main(argv)
+        return code, pipeline, session, stderr.getvalue()
+
+    def test_derives_inbound_with_cable_b_in_and_headset_out(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            profile = self._profile(temp_dir, "en-de")
+            code, pipeline, session, stderr = self._run(["converse", "--outbound-config", str(profile)])
+
+        self.assertEqual(code, 0, stderr)
+        outbound, inbound = (call.args[0] for call in pipeline.call_args_list)
+        self.assertEqual(outbound.translation.target_language, "de")
+        self.assertEqual(inbound.asr.source_language, "de")
+        self.assertEqual(inbound.translation.source_language, "de")
+        self.assertEqual(inbound.translation.target_language, "en")
+        self.assertEqual(inbound.tts.model_path, "models/tts/en_US-hfc_male-medium.onnx")
+        self.assertEqual(inbound.audio.input_device, "CABLE-B Output (VB-Audio Virtual Cable B)")
+        self.assertEqual(inbound.audio.output_device, "Headphones (Jabra Evolve2 65)")
+        self.assertIsNone(inbound.audio.peer_input_device)
+        session.return_value.run.assert_called_once()
+
+    def test_refuses_a_looping_inbound_profile_before_loading_anything(self) -> None:
+        # A de-en profile written by setup plays into the outbound cable, which
+        # for an inbound direction feeds translated speech back into the meeting.
+        with TemporaryDirectory() as temp_dir:
+            outbound = self._profile(temp_dir, "en-de")
+            inbound = self._profile(temp_dir, "de-en")
+            code, pipeline, session, stderr = self._run(
+                ["converse", "--outbound-config", str(outbound), "--inbound-config", str(inbound)]
+            )
+
+        self.assertEqual(code, 1)
+        self.assertIn("is a virtual device", stderr)
+        pipeline.assert_not_called()
+        session.assert_not_called()
+
+    def test_explicit_inbound_language_and_voice_are_validated_before_startup(self) -> None:
+        cases = (
+            ("en-de", "en_US", False, "German Piper voice"),
+            ("de-en", "de_DE", False, "English Piper voice"),
+            ("de-en", "en_US", True, ""),
+            ("en-de", "de_DE", True, ""),
+        )
+        for direction, voice_language, accepted, error in cases:
+            with self.subTest(direction=direction, voice_language=voice_language), TemporaryDirectory() as temp:
+                outbound = self._profile(temp, "en-de")
+                explicit = Path(temp) / "inbound.yaml"
+                payload = yaml.safe_load(self._profile(temp, direction).read_text())
+                payload["audio"].update(input_device=CONVERSE_DEVICES[2].name,
+                                        output_device=CONVERSE_DEVICES[-1].name)
+                explicit.write_text(yaml.safe_dump(payload))
+                metadata = Path(temp) / "voice.onnx.json"
+                metadata.write_text(json.dumps({"language": {"code": voice_language}}))
+                with patch("live_translator.profiles.resolve_trusted_path",
+                           side_effect=[Path(temp) / "voice.onnx", metadata]):
+                    code, pipeline, session, stderr = self._run(
+                        ["converse", "--outbound-config", str(outbound), "--inbound-config", str(explicit)]
+                    )
+                self.assertEqual(code, 0 if accepted else 1, stderr)
+                if accepted:
+                    session.return_value.run.assert_called_once()
+                else:
+                    self.assertIn(error, stderr)
+                    pipeline.assert_not_called()
+                    session.assert_not_called()
+
+    def test_inbound_validator_explains_a_missing_voice_path(self) -> None:
+        outbound = AppConfig()
+        inbound = inbound_config(outbound)
+        for missing in (None, ""):
+            with self.subTest(model_path=missing):
+                invalid = replace(inbound, tts=replace(inbound.tts, engine="piper", model_path=missing))
+                with patch("live_translator.profiles.resolve_trusted_path") as resolve:
+                    with self.assertRaisesRegex(ValueError, "tts.model_path is required"):
+                        validate_inbound_config(invalid)
+                resolve.assert_not_called()
+
+    def test_explicit_inbound_without_voice_path_reports_a_config_error(self) -> None:
+        with TemporaryDirectory() as temp:
+            outbound = self._profile(temp, "en-de")
+            explicit = self._profile(temp, "de-en")
+            payload = yaml.safe_load(explicit.read_text())
+            del payload["tts"]["model_path"]
+            explicit.write_text(yaml.safe_dump(payload))
+            code, pipeline, session, stderr = self._run(
+                ["converse", "--outbound-config", str(outbound), "--inbound-config", str(explicit)]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("tts.model_path is required", stderr)
+        self.assertNotIn("Traceback", stderr)
+        pipeline.assert_not_called()
+        session.assert_not_called()
+
+    def test_both_directions_can_translate_english_to_german(self) -> None:
+        with TemporaryDirectory() as temp:
+            outbound = self._profile(temp, "en-de")
+            code, pipeline, session, stderr = self._run([
+                "converse", "--outbound-config", str(outbound),
+                "--their-language", "en", "--inbound-target-language", "de",
+            ], real_session=True)
+        self.assertEqual(code, 0, stderr)
+        incoming = pipeline.call_args_list[1].args[0]
+        self.assertEqual(incoming.asr.source_language, "en")
+        self.assertEqual(incoming.translation.source_language, "en")
+        self.assertEqual(incoming.translation.target_language, "de")
+        self.assertEqual(incoming.tts.model_path, "models/tts/de_DE-thorsten-medium.onnx")
+        self.assertEqual(incoming.audio.input_device, CONVERSE_DEVICES[2].name)
+        self.assertEqual(incoming.audio.output_device, CONVERSE_DEVICES[-1].name)
+        directions = session.call_args.args[0]
+        self.assertEqual([d.label for d in directions], ["Outbound EN->DE", "Inbound EN->DE"])
+        self.assertEqual(pipeline.return_value.run_prepared.call_count, 2)
+        self.assertEqual(
+            {call.kwargs["label"] for call in pipeline.return_value.run_prepared.call_args_list},
+            {"Outbound EN->DE", "Inbound EN->DE"},
+        )
+
+    def test_their_language_needs_a_derived_inbound_direction(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            outbound = self._profile(temp_dir, "en-de")
+            inbound = self._profile(temp_dir, "de-en")
+            code, pipeline, session, stderr = self._run(
+                [
+                    "converse",
+                    "--outbound-config",
+                    str(outbound),
+                    "--inbound-config",
+                    str(inbound),
+                    "--their-language",
+                    "de",
+                ]
+            )
+
+        self.assertEqual(code, 1)
+        self.assertIn("--their-language", stderr)
+        session.assert_not_called()
+
+
+class RouteTestInboundTests(unittest.TestCase):
+    def _run(self, extra_args: list[str], *, passed: bool = True):
+        stdout = io.StringIO()
+        result = SimpleNamespace(passed=passed, tone_rms=0.1400, tone_ratio=0.99, sample_rate=48000)
+        with TemporaryDirectory() as temp_dir:
+            profile = write_meeting_profile(
+                path=Path(temp_dir) / "en-de.yaml",
+                direction="en-de",
+                microphone_device="auto",
+                translated_output_device="auto",
+                meeting_microphone_device="auto",
+            )
+            with (
+                patch("live_translator.cli.test_output_to_input_route", return_value=result) as route,
+                patch(
+                    "live_translator.cli.describe_device_selection",
+                    side_effect=lambda name, kind, role: f"<{role}>",
+                ),
+                redirect_stdout(stdout),
+                redirect_stderr(io.StringIO()),
+            ):
+                code = main(["route-test", "--config", str(profile), *extra_args])
+        return code, route, stdout.getvalue()
+
+    def test_inbound_plays_into_the_second_cable_and_listens_where_inbound_captures(self) -> None:
+        code, route, output = self._run(["--inbound"])
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(route.call_args.kwargs["output_role"], "remote_playback")
+        self.assertEqual(route.call_args.kwargs["input_role"], "remote_input")
+        self.assertIn("PASS: <remote_playback> -> <remote_input>", output)
+
+    def test_inbound_explains_scope_of_a_passing_cable_check(self) -> None:
+        code, _, output = self._run(["--inbound"])
+        self.assertEqual(code, 0)
+        self.assertIn("explicit inbound profiles and headset playback are not validated", output)
+
+    def test_inbound_rejects_an_outbound_device_override(self) -> None:
+        code, route, _ = self._run(["--inbound", "--meeting-microphone-device", "wrong device"])
+        self.assertEqual(code, 1)
+        route.assert_not_called()
+
+    def test_inbound_failure_says_the_inbound_direction_will_not_hear_the_meeting(self) -> None:
+        code, _, output = self._run(["--inbound"], passed=False)
+
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL: <remote_playback> -> <remote_input>", output)
+        self.assertIn("inbound direction", output)
+
+    def test_outbound_route_test_keeps_its_roles(self) -> None:
+        code, route, output = self._run([])
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(route.call_args.kwargs["output_role"], "translated_output")
+        self.assertEqual(route.call_args.kwargs["input_role"], "meeting_input")
+        self.assertIn("PASS: <translated_output> -> <meeting_input>", output)
 
 
 class CliTests(unittest.TestCase):

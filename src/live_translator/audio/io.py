@@ -212,7 +212,9 @@ def play_mono(audio: Any, settings: AudioSettings) -> None:
 
 
 def write_wav(path: str | Path, audio: Any, sample_rate: int) -> None:
-    _, np = _audio_packages()
+    # Only numpy: writing a file must not need PortAudio, which is absent on
+    # Linux CI runners and makes `import sounddevice` raise OSError.
+    np = _numpy_package()
     samples = np.asarray(audio, dtype=np.float32).reshape(-1)
     pcm = np.clip(samples, -1.0, 1.0)
     pcm = (pcm * 32767.0).astype(np.int16)
@@ -227,7 +229,7 @@ def write_wav(path: str | Path, audio: Any, sample_rate: int) -> None:
 
 
 def read_wav_mono(path: str | Path) -> tuple[Any, int]:
-    _, np = _audio_packages()
+    np = _numpy_package()
     with wave.open(str(path), "rb") as handle:
         channels = handle.getnchannels()
         sample_width = handle.getsampwidth()

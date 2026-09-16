@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from math import pi
 from typing import Any
 
-from live_translator.audio.devices import resolve_device_index
+from live_translator.audio.devices import DeviceRole, resolve_device_index
 from live_translator.errors import MissingDependency
 
 
@@ -27,10 +27,12 @@ def test_output_to_input_route(
     frequency_hz: float = 880.0,
     threshold: float = 0.01,
     min_tone_ratio: float = 0.5,
+    output_role: DeviceRole = "translated_output",
+    input_role: DeviceRole = "meeting_input",
 ) -> RouteTestResult:
     sd, np = _audio_packages()
-    output_index = resolve_device_index(output_device, "output", role="translated_output")
-    input_index = resolve_device_index(input_device, "input", role="meeting_input")
+    output_index = resolve_device_index(output_device, "output", role=output_role)
+    input_index = resolve_device_index(input_device, "input", role=input_role)
 
     for rate in _candidate_rates(sd, input_index, output_index, sample_rate):
         try:
