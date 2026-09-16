@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import importlib.util
 import sys
 from pathlib import Path
@@ -89,6 +90,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--show-text",
         action="store_true",
         help="print each phrase and its translation on screen; writes nothing to disk",
+    )
+    meeting.add_argument(
+        "--event-format",
+        choices=("text", "jsonl"),
+        default="text",
+        help="emit stable machine-readable session events for a GUI client",
     )
     meeting.add_argument(
         "--diagnostics",
@@ -260,6 +267,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--show-text",
         action="store_true",
         help="print each phrase and its translation on screen; writes nothing to disk",
+    )
+    converse.add_argument(
+        "--event-format",
+        choices=("text", "jsonl"),
+        default="text",
+        help="machine-readable output format for desktop clients",
     )
     converse.add_argument("--verbose", action="store_true", help="show audio gates and per-segment timings")
     converse.set_defaults(func=cmd_converse)
@@ -663,13 +676,18 @@ def cmd_meeting(args: argparse.Namespace) -> int:
     if args.config is None:
         args.config = str(default_profile_path(args.profile))
     config = build_config(args)
-    LocalTranslatorPipeline(config).loopback(
+    event_sink = _print_json_event if args.event_format == "jsonl" else None
+    LocalTranslatorPipeline(config, event_sink=event_sink).loopback(
         debug_audio_dir=args.debug_audio_dir,
         verbose=args.verbose,
         diagnostics=args.diagnostics,
         show_text=args.show_text,
     )
     return 0
+
+
+def _print_json_event(event: dict[str, object]) -> None:
+    print(json.dumps(event, ensure_ascii=False), flush=True)
 
 
 def cmd_route_test(args: argparse.Namespace) -> int:
@@ -832,9 +850,10 @@ def cmd_converse(args: argparse.Namespace) -> int:
     if args.inbound_config or args.inbound_profile:
         validate_inbound_config(inbound_config)
 
+    event_sink = _print_json_event if args.event_format == "jsonl" else None
     directions = [
-        _build_direction(outbound_config, args, role="Outbound"),
-        _build_direction(inbound_config, args, role="Inbound"),
+        _build_direction(outbound_config, args, role="Outbound", event_sink=event_sink),
+        _build_direction(inbound_config, args, role="Inbound", event_sink=event_sink),
     ]
     # Initialise PortAudio on the main thread first: each direction opens its
     # streams from its own worker thread, and PortAudio's first-time init is not
@@ -884,14 +903,27 @@ def _resolve_direction_config(config_path: str | None, profile: str | None, role
     return load_config(path)
 
 
-def _build_direction(config, args: argparse.Namespace, *, role: str = "") -> Direction:
+def _build_direction(
+    config,
+    args: argparse.Namespace,
+    *,
+    role: str = "",
+    event_sink=None,
+) -> Direction:
     label = (
         f"{config.translation.source_language.upper()}->"
         f"{config.translation.target_language.upper()}"
     )
     if role:
         label = f"{role} {label}"
-    pipeline = LocalTranslatorPipeline(config)
+    role_event_sink = None
+    if event_sink is not None:
+        role_name = role.lower()
+
+        def role_event_sink(event: dict[str, object]) -> None:
+            event_sink({**event, "role": role_name})
+
+    pipeline = LocalTranslatorPipeline(config, event_sink=role_event_sink)
     return Direction(
         label=label,
         prepare=pipeline.prepare,

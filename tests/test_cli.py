@@ -12,7 +12,7 @@ import yaml
 
 from live_translator.asr.model_store import recorded_revision
 from live_translator.audio.devices import AudioDevice
-from live_translator.cli import build_parser, cmd_prepare_models, main
+from live_translator.cli import _print_json_event, build_parser, cmd_prepare_models, main
 from live_translator.defaults import ASR_MODEL_REVISION
 from live_translator.session import BidirectionalSession
 from live_translator.config import AppConfig
@@ -102,6 +102,29 @@ class ConverseTests(unittest.TestCase):
         self.assertEqual(inbound.audio.output_device, "Headphones (Jabra Evolve2 65)")
         self.assertIsNone(inbound.audio.peer_input_device)
         session.return_value.run.assert_called_once()
+
+    def test_jsonl_events_identify_each_conversation_side(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            profile = self._profile(temp_dir, "en-de")
+            code, pipeline, _, stderr = self._run(
+                [
+                    "converse",
+                    "--outbound-config",
+                    str(profile),
+                    "--event-format",
+                    "jsonl",
+                ]
+            )
+
+        self.assertEqual(code, 0, stderr)
+        sinks = [call.kwargs["event_sink"] for call in pipeline.call_args_list]
+        output = io.StringIO()
+        with redirect_stdout(output):
+            sinks[0]({"type": "translation", "source_text": "Hello"})
+            sinks[1]({"type": "translation", "source_text": "Hallo"})
+
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([event["role"] for event in events], ["outbound", "inbound"])
 
     def test_refuses_a_looping_inbound_profile_before_loading_anything(self) -> None:
         # A de-en profile written by setup plays into the outbound cable, which
@@ -351,6 +374,30 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(args.chunker, "rolling")
+
+    def test_meeting_accepts_jsonl_events_for_gui_clients(self) -> None:
+        args = build_parser().parse_args(
+            ["meeting", "--profile", "en-de", "--event-format", "jsonl"]
+        )
+
+        self.assertEqual(args.event_format, "jsonl")
+
+    def test_converse_accepts_jsonl_events_for_gui_clients(self) -> None:
+        args = build_parser().parse_args(
+            ["converse", "--outbound-profile", "en-de", "--event-format", "jsonl"]
+        )
+
+        self.assertEqual(args.event_format, "jsonl")
+
+    def test_json_event_is_one_utf8_safe_line(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            _print_json_event({"type": "translation", "translated_text": "Können"})
+
+        self.assertEqual(
+            output.getvalue(),
+            '{"type": "translation", "translated_text": "Können"}\n',
+        )
 
 
 class DiagnosticsFlagTests(unittest.TestCase):

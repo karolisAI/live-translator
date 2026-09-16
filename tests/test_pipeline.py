@@ -37,6 +37,47 @@ class FakeSpeaker:
 
 
 class PipelineTests(unittest.TestCase):
+    def test_show_text_emits_structured_translation_event_for_gui(self) -> None:
+        events: list[dict[str, object]] = []
+        pipeline = LocalTranslatorPipeline(AppConfig(), event_sink=events.append)
+        pipeline._show_text = True
+        speaker = FakeSpeaker()
+
+        class FakeTranslator:
+            def translate(self, text: str) -> str:
+                return "Hallo Welt"
+
+        class FakeSegment:
+            number = 7
+            audio = [0.0] * 16000
+            captured_at = 0.0
+
+        transcript = TranscriptResult(
+            text="Hello world",
+            language="en",
+            duration_seconds=1.0,
+            inference_seconds=0.1,
+            low_confidence=False,
+        )
+        with patch.object(pipeline, "_transcribe_audio_if_safe", return_value=transcript):
+            with redirect_stdout(io.StringIO()):
+                pipeline._process_live_segment(FakeSegment(), FakeTranslator(), speaker, None)
+
+        self.assertEqual(
+            events,
+            [
+                {
+                    "type": "translation",
+                    "source_language": "en",
+                    "target_language": "de",
+                    "source_text": "Hello world",
+                    "translated_text": "Hallo Welt",
+                    "low_confidence": False,
+                    "segment": 7,
+                }
+            ],
+        )
+
     def test_realtime_queue_sizes_come_from_config(self) -> None:
         pipeline = LocalTranslatorPipeline(
             AppConfig(realtime=RealtimeSettings(recognition_queue_size=3, playback_queue_size=2))

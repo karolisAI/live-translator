@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import mkdtemp
 from threading import Event, Thread
 from time import perf_counter
+from typing import Callable
 
 from live_translator.asr import AsrEngine, TranscriptResult, create_asr
 from live_translator.audio.analysis import analyze_audio, has_enough_audio_energy
@@ -32,8 +33,14 @@ from live_translator.tts import RenderedSpeech, TtsSpeaker
 
 
 class LocalTranslatorPipeline:
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        event_sink: Callable[[dict[str, object]], None] | None = None,
+    ) -> None:
         self._config = config
+        self._event_sink = event_sink
         self._asr: AsrEngine | None = None
         self._translator: TranslationEngine | None = None
         self._speaker: TtsSpeaker | None = None
@@ -245,6 +252,7 @@ class LocalTranslatorPipeline:
         target = self._config.translation.target_language.upper()
         print(f"{self._line_prefix()}Direction: {source} -> {target}")
         print(f"{self._line_prefix()}Live translation active. Listening continuously between phrases.")
+        self._emit_event("status", state="active", source=source.lower(), target=target.lower())
         self._announce_text_display()
         if self._verbose and chunker == "vad":
             print(
@@ -347,6 +355,16 @@ class LocalTranslatorPipeline:
             return None
 
         translated = translator.translate(transcript.text)
+        if self._show_text:
+            self._emit_event(
+                "translation",
+                source_language=self._config.translation.source_language,
+                target_language=self._config.translation.target_language,
+                source_text=transcript.text,
+                translated_text=translated,
+                low_confidence=transcript.low_confidence,
+                segment=segment.number,
+            )
         self._write_debug_note(debug_wav, transcript.text, translated)
         self._print_asr_rejections(transcript)
         if self._show_text:
@@ -492,6 +510,10 @@ class LocalTranslatorPipeline:
         print()
         print(f"{prefix}{source}{marker}: {source_text}")
         print(f"{prefix}{target}{marker}: {target_text}")
+
+    def _emit_event(self, event_type: str, **payload: object) -> None:
+        if self._event_sink is not None:
+            self._event_sink({"type": event_type, **payload})
 
     def _announce_text_display(self) -> None:
         """Say once that the conversation will be on screen.
