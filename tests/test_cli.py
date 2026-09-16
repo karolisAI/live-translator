@@ -154,6 +154,39 @@ class ConverseTests(unittest.TestCase):
         self.assertEqual(outbound.tts.length_scale, 1.2)
         self.assertEqual(inbound.tts.length_scale, 0.8)
 
+    def test_converse_applies_gui_audio_routes_and_speech_toggles(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            profile = self._profile(temp_dir, "en-de")
+            code, pipeline, _, stderr = self._run(
+                [
+                    "converse",
+                    "--outbound-config",
+                    str(profile),
+                    "--outbound-input-device",
+                    "30",
+                    "--outbound-output-device",
+                    "26",
+                    "--meeting-microphone-device",
+                    "33",
+                    "--inbound-input-device",
+                    "31",
+                    "--inbound-output-device",
+                    "40",
+                    "--no-outbound-speech",
+                    "--no-inbound-speech",
+                ]
+            )
+
+        self.assertEqual(code, 0, stderr)
+        outbound, inbound = (call.args[0] for call in pipeline.call_args_list)
+        self.assertEqual(outbound.audio.input_device, "30")
+        self.assertEqual(outbound.audio.output_device, "26")
+        self.assertEqual(outbound.audio.peer_input_device, "33")
+        self.assertEqual(inbound.audio.input_device, "31")
+        self.assertEqual(inbound.audio.output_device, "40")
+        self.assertEqual(outbound.tts.engine, "none")
+        self.assertEqual(inbound.tts.engine, "none")
+
     def test_confidential_mode_disables_profile_diagnostics(self) -> None:
         with TemporaryDirectory() as temp_dir:
             profile = self._profile(temp_dir, "en-de")

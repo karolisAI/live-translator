@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Text.Json;
 
 namespace Translator.Services;
 
@@ -12,8 +13,17 @@ internal sealed record BackendStartOptions(
     string? InboundVoice,
     double OutboundVoiceSpeed,
     double InboundVoiceSpeed,
+    string? OutboundInputDevice,
+    string? OutboundOutputDevice,
+    string? MeetingMicrophoneDevice,
+    string? InboundInputDevice,
+    string? InboundOutputDevice,
+    bool SpeakOutbound,
+    bool SpeakInbound,
     bool Confidential,
     bool Diagnostics);
+
+internal sealed record AudioDeviceOption(string Id, string Name, string HostApi);
 
 internal sealed class LiveTranslatorBackend : IDisposable
 {
@@ -48,6 +58,15 @@ internal sealed class LiveTranslatorBackend : IDisposable
         startInfo.ArgumentList.Add(options.OutboundVoiceSpeed.ToString("0.0", CultureInfo.InvariantCulture));
         startInfo.ArgumentList.Add("--inbound-voice-speed");
         startInfo.ArgumentList.Add(options.InboundVoiceSpeed.ToString("0.0", CultureInfo.InvariantCulture));
+        AddOptionalArgument(startInfo, "--outbound-input-device", options.OutboundInputDevice);
+        AddOptionalArgument(startInfo, "--outbound-output-device", options.OutboundOutputDevice);
+        AddOptionalArgument(startInfo, "--meeting-microphone-device", options.MeetingMicrophoneDevice);
+        AddOptionalArgument(startInfo, "--inbound-input-device", options.InboundInputDevice);
+        AddOptionalArgument(startInfo, "--inbound-output-device", options.InboundOutputDevice);
+        if (!options.SpeakOutbound)
+            startInfo.ArgumentList.Add("--no-outbound-speech");
+        if (!options.SpeakInbound)
+            startInfo.ArgumentList.Add("--no-inbound-speech");
 
         if (options.Confidential)
             startInfo.ArgumentList.Add("--confidential");
@@ -86,6 +105,41 @@ internal sealed class LiveTranslatorBackend : IDisposable
         _process = process;
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
+    }
+
+    public static async Task<IReadOnlyList<AudioDeviceOption>> ListDevicesAsync(string kind)
+    {
+        var startInfo = CreateStartInfo();
+        startInfo.ArgumentList.Add(kind == "input" ? "list-input-devices" : "list-output-devices");
+        startInfo.ArgumentList.Add("--format");
+        startInfo.ArgumentList.Add("jsonl");
+
+        using var process = new Process { StartInfo = startInfo };
+        if (!process.Start())
+            throw new InvalidOperationException("Audio devices could not be queried.");
+
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        var errorTask = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        var output = await outputTask;
+        var error = await errorTask;
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(error) ? "Audio devices could not be queried." : error.Trim());
+
+        var devices = new List<AudioDeviceOption>();
+        foreach (var line in output.Split(
+                     '\n',
+                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            devices.Add(new AudioDeviceOption(
+                root.GetProperty("index").GetInt32().ToString(CultureInfo.InvariantCulture),
+                root.GetProperty("name").GetString() ?? "Unknown device",
+                root.GetProperty("host_api").GetString() ?? string.Empty));
+        }
+        return devices;
     }
 
     public async Task StopAsync()
@@ -141,12 +195,26 @@ internal sealed class LiveTranslatorBackend : IDisposable
         var repository = FindRepositoryRoot();
         if (repository is not null)
         {
-            var development = ForExecutable("uv");
-            development.WorkingDirectory = repository;
-            development.ArgumentList.Add("run");
-            development.ArgumentList.Add("--frozen");
-            development.ArgumentList.Add("live-translator");
-            return development;
+            var virtualEnvironmentPython = Path.Combine(repository, ".venv", "Scripts", "python.exe");
+            if (File.Exists(virtualEnvironmentPython))
+            {
+                var pythonDevelopment = ForExecutable(virtualEnvironmentPython);
+                pythonDevelopment.WorkingDirectory = repository;
+                pythonDevelopment.Environment["PYTHONPATH"] = Path.Combine(repository, "src");
+                pythonDevelopment.ArgumentList.Add("-c");
+                pythonDevelopment.ArgumentList.Add(
+                    "from live_translator.cli import main; raise SystemExit(main())");
+                return pythonDevelopment;
+            }
+
+            var uvDevelopment = ForExecutable("uv");
+            uvDevelopment.WorkingDirectory = repository;
+            uvDevelopment.ArgumentList.Add("run");
+            uvDevelopment.ArgumentList.Add("--frozen");
+            uvDevelopment.ArgumentList.Add("--with-editable");
+            uvDevelopment.ArgumentList.Add(".");
+            uvDevelopment.ArgumentList.Add("live-translator");
+            return uvDevelopment;
         }
 
         throw new FileNotFoundException(

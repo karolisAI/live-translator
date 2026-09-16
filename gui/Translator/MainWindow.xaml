@@ -250,37 +250,37 @@
                             <StackPanel>
                                 <TextBlock Text="My voice · You → other people" Style="{StaticResource SectionHeading}"/>
                                 <Grid Margin="0,0,0,16"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                                    <StackPanel><TextBlock Text="I speak" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="MyLanguageComboBox"><ComboBoxItem Content="English"/><ComboBoxItem Content="German"/><ComboBoxItem Content="Lithuanian"/></ComboBox></StackPanel>
-                                    <StackPanel Grid.Column="2"><TextBlock Text="I want to be heard in" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="MyTargetLanguageComboBox"><ComboBoxItem Content="German"/><ComboBoxItem Content="English"/><ComboBoxItem Content="Lithuanian"/></ComboBox></StackPanel>
+                                    <StackPanel><TextBlock Text="I speak" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="MyLanguageComboBox"><ComboBoxItem Content="English"/><ComboBoxItem Content="German"/></ComboBox></StackPanel>
+                                    <StackPanel Grid.Column="2"><TextBlock Text="I want to be heard in" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="MyTargetLanguageComboBox"><ComboBoxItem Content="German"/><ComboBoxItem Content="English"/></ComboBox></StackPanel>
                                 </Grid>
                                 <TextBlock Text="My translated voice" Style="{StaticResource FieldLabel}"/>
                                 <ComboBox x:Name="MyVoiceComboBox" Margin="0,0,0,16"><ComboBoxItem Content="Male · Match target language"/><ComboBoxItem Content="Female · Match target language"/><ComboBoxItem Content="Automatic · Match target language"/></ComboBox>
-                                <Grid><TextBlock Text="Voice speed" Style="{StaticResource FieldLabel}"/><TextBlock Text="1.0×" Style="{StaticResource FieldLabel}" HorizontalAlignment="Right"/></Grid>
+                                <Grid><TextBlock Text="Voice speed" Style="{StaticResource FieldLabel}"/><TextBlock x:Name="MyVoiceSpeedText" Text="1.0×" Style="{StaticResource FieldLabel}" HorizontalAlignment="Right"/></Grid>
                                 <Slider x:Name="MyVoiceSpeedSlider" Minimum="0.5" Maximum="1.5" Value="1" TickFrequency="0.1" IsSnapToTickEnabled="True" Margin="0,0,0,18"/>
                                 <TextBlock Text="My microphone · Audio source" Style="{StaticResource FieldLabel}"/>
-                                <ComboBox x:Name="MyMicrophoneComboBox" Margin="0,0,0,16"><ComboBoxItem Content="Automatic · Default microphone"/><ComboBoxItem Content="Microphone · USB headset"/><ComboBoxItem Content="Microphone · Laptop"/></ComboBox>
+                                <ComboBox x:Name="MyMicrophoneComboBox" Margin="0,0,0,16"><ComboBoxItem Content="Automatic · Physical microphone" Tag="auto"/></ComboBox>
                                 <TextBlock Text="Send my translated audio to" Style="{StaticResource FieldLabel}"/>
-                                <ComboBox x:Name="MyAudioOutputComboBox" Margin="0,0,0,16"><ComboBoxItem Content="CABLE Input · Virtual playback"/><ComboBoxItem Content="Default speakers"/><ComboBoxItem Content="Headphones · USB headset"/></ComboBox>
+                                <ComboBox x:Name="MyAudioOutputComboBox" Margin="0,0,0,16"><ComboBoxItem Content="Automatic · Translated output" Tag="auto"/></ComboBox>
                                 <TextBlock Text="Meeting app microphone" Style="{StaticResource FieldLabel}"/>
-                                <ComboBox x:Name="MeetingMicrophoneComboBox" Margin="0,0,0,12"><ComboBoxItem Content="CABLE Output · Virtual capture"/><ComboBoxItem Content="Default microphone"/></ComboBox>
-                                <TextBlock Text="Select this microphone in Teams, Zoom or your meeting app." Style="{StaticResource MutedText}"/>
+                                <ComboBox x:Name="MeetingMicrophoneComboBox" Margin="0,0,0,12"><ComboBoxItem Content="Automatic · Meeting microphone" Tag="auto"/></ComboBox>
+                                <TextBlock Text="Use the same microphone in Teams, Zoom or your meeting app. The translator cannot change another app’s device automatically." Style="{StaticResource MutedText}" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
                         <StackPanel Grid.Column="2">
                             <Border Style="{StaticResource SettingsGroup}"><StackPanel>
                                 <TextBlock Text="Other people · Other people → you" Style="{StaticResource SectionHeading}"/>
                                 <Grid Margin="0,0,0,16"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                                    <StackPanel><TextBlock Text="They speak" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="TheirLanguageComboBox"><ComboBoxItem Content="German"/><ComboBoxItem Content="English"/><ComboBoxItem Content="Lithuanian"/></ComboBox></StackPanel>
-                                    <StackPanel Grid.Column="2"><TextBlock Text="Translate for me into" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="TheirTargetLanguageComboBox"><ComboBoxItem Content="English"/><ComboBoxItem Content="German"/><ComboBoxItem Content="Lithuanian"/></ComboBox></StackPanel>
+                                    <StackPanel><TextBlock Text="They speak" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="TheirLanguageComboBox"><ComboBoxItem Content="German"/><ComboBoxItem Content="English"/></ComboBox></StackPanel>
+                                    <StackPanel Grid.Column="2"><TextBlock Text="Translate for me into" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="TheirTargetLanguageComboBox"><ComboBoxItem Content="English"/><ComboBoxItem Content="German"/></ComboBox></StackPanel>
                                 </Grid>
                                 <TextBlock Text="Their translated voice" Style="{StaticResource FieldLabel}"/>
                                 <ComboBox x:Name="TheirVoiceComboBox" Margin="0,0,0,16"><ComboBoxItem Content="Female · Match target language"/><ComboBoxItem Content="Male · Match target language"/><ComboBoxItem Content="Automatic · Match target language"/></ComboBox>
-                                <Grid><TextBlock Text="Voice speed" Style="{StaticResource FieldLabel}"/><TextBlock Text="1.0×" Style="{StaticResource FieldLabel}" HorizontalAlignment="Right"/></Grid>
+                                <Grid><TextBlock Text="Voice speed" Style="{StaticResource FieldLabel}"/><TextBlock x:Name="TheirVoiceSpeedText" Text="1.0×" Style="{StaticResource FieldLabel}" HorizontalAlignment="Right"/></Grid>
                                 <Slider x:Name="TheirVoiceSpeedSlider" Minimum="0.5" Maximum="1.5" Value="1" TickFrequency="0.1" IsSnapToTickEnabled="True" Margin="0,0,0,18"/>
                                 <TextBlock Text="Other people’s audio · Audio source" Style="{StaticResource FieldLabel}"/>
-                                <ComboBox x:Name="TheirAudioSourceComboBox" Margin="0,0,0,16"><ComboBoxItem Content="Meeting app audio · Application capture"/><ComboBoxItem Content="System audio · Loopback"/><ComboBoxItem Content="Virtual audio device"/></ComboBox>
+                                <ComboBox x:Name="TheirAudioSourceComboBox" Margin="0,0,0,16"><ComboBoxItem Content="Automatic · Remote audio input" Tag="auto"/></ComboBox>
                                 <TextBlock Text="Hear their translated audio on" Style="{StaticResource FieldLabel}"/>
-                                <ComboBox x:Name="TheirAudioOutputComboBox"><ComboBoxItem Content="Headphones · Default output"/><ComboBoxItem Content="Headphones · USB headset"/><ComboBoxItem Content="Default speakers"/></ComboBox>
+                                <ComboBox x:Name="TheirAudioOutputComboBox"><ComboBoxItem Content="Automatic · Headphones or speakers" Tag="auto"/></ComboBox>
                             </StackPanel></Border>
                             <Border Style="{StaticResource SettingsGroup}"><StackPanel>
                                 <TextBlock Text="Conversation preferences" Style="{StaticResource SectionHeading}" Margin="0,0,0,10"/>
@@ -289,8 +289,6 @@
                                 <CheckBox x:Name="SpeakMyTranslationCheckBox" Content="Speak my translation" IsChecked="True"/>
                                 <CheckBox x:Name="SpeakTheirTranslationCheckBox" Content="Speak their translation" IsChecked="True"/>
                                 <Expander Header="Advanced &amp; diagnostics" Margin="0,12,0,0"><StackPanel Margin="0,14,0,0">
-                                    <TextBlock Text="Session profile" Style="{StaticResource FieldLabel}"/>
-                                    <ComboBox x:Name="SessionProfileComboBox" Margin="0,0,0,8"><ComboBoxItem Content="Custom conversation"/><ComboBoxItem Content="English ↔ German"/><ComboBoxItem Content="Lithuanian ↔ English"/></ComboBox>
                                     <CheckBox x:Name="CaptureDiagnosticsCheckBox" Content="Capture diagnostics"/>
                                 </StackPanel></Expander>
                             </StackPanel></Border>
@@ -303,7 +301,7 @@
             </Border>
         </Grid>
         <Border Grid.Row="2" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="28,8">
-            <TextBlock Text="Design preview · No audio is captured or translated." FontSize="11" Foreground="#7B828B"/>
+            <TextBlock Text="Offline translation · Audio is processed locally · Diagnostics are optional" FontSize="11" Foreground="#7B828B"/>
         </Border>
     </Grid>
 </Window>

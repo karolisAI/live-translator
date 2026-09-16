@@ -15,6 +15,7 @@ from live_translator.audio.devices import (
     DeviceRole,
     check_inbound_route,
     describe_device_selection,
+    list_devices,
     print_devices,
     probe_devices,
     resolve_device_index,
@@ -170,10 +171,12 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.set_defaults(func=cmd_prepare_models)
 
     list_inputs = subparsers.add_parser("list-input-devices", help="list capture devices")
-    list_inputs.set_defaults(func=lambda _args: print_devices("input"))
+    list_inputs.add_argument("--format", choices=("text", "jsonl"), default="text")
+    list_inputs.set_defaults(func=lambda args: _list_devices(args, "input"))
 
     list_outputs = subparsers.add_parser("list-output-devices", help="list playback devices")
-    list_outputs.set_defaults(func=lambda _args: print_devices("output"))
+    list_outputs.add_argument("--format", choices=("text", "jsonl"), default="text")
+    list_outputs.set_defaults(func=lambda args: _list_devices(args, "output"))
 
     probe_inputs = subparsers.add_parser("probe-input-devices", help="try opening each capture device")
     probe_inputs.set_defaults(func=lambda _args: probe_devices("input"))
@@ -289,6 +292,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     converse.add_argument("--outbound-voice-speed", type=float, default=None)
     converse.add_argument("--inbound-voice-speed", type=float, default=None)
+    converse.add_argument("--outbound-input-device", default=None)
+    converse.add_argument("--outbound-output-device", default=None)
+    converse.add_argument("--meeting-microphone-device", default=None)
+    converse.add_argument("--inbound-input-device", default=None)
+    converse.add_argument("--inbound-output-device", default=None)
+    converse.add_argument("--no-outbound-speech", action="store_true")
+    converse.add_argument("--no-inbound-speech", action="store_true")
     privacy = converse.add_mutually_exclusive_group()
     privacy.add_argument(
         "--diagnostics",
@@ -304,6 +314,24 @@ def build_parser() -> argparse.ArgumentParser:
     converse.set_defaults(func=cmd_converse)
 
     return parser
+
+
+def _list_devices(args: argparse.Namespace, kind: str) -> None:
+    if args.format == "text":
+        print_devices(kind)
+        return
+    for device in list_devices(kind):
+        print(
+            json.dumps(
+                {
+                    "index": device.index,
+                    "name": device.name,
+                    "host_api": device.host_api,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
 
 
 def add_inbound_language_options(parser: argparse.ArgumentParser) -> None:
@@ -869,12 +897,20 @@ def cmd_converse(args: argparse.Namespace) -> int:
         outbound_config,
         voice=args.outbound_voice,
         voice_speed=args.outbound_voice_speed,
+        input_device=args.outbound_input_device,
+        output_device=args.outbound_output_device,
+        peer_input_device=args.meeting_microphone_device,
+        speak=not args.no_outbound_speech,
         confidential=args.confidential,
     )
     inbound_config = _apply_converse_overrides(
         inbound_config,
         voice=args.inbound_voice,
         voice_speed=args.inbound_voice_speed,
+        input_device=args.inbound_input_device,
+        output_device=args.inbound_output_device,
+        peer_input_device=None,
+        speak=not args.no_inbound_speech,
         confidential=args.confidential,
     )
     # Before anything is loaded or opened: an inbound route that plays into the
@@ -987,6 +1023,10 @@ def _apply_converse_overrides(
     *,
     voice: str | None,
     voice_speed: float | None,
+    input_device: str | None,
+    output_device: str | None,
+    peer_input_device: str | None,
+    speak: bool,
     confidential: bool,
 ) -> AppConfig:
     model_path = None
@@ -997,6 +1037,10 @@ def _apply_converse_overrides(
 
     updated = apply_cli_overrides(
         config,
+        input_device=input_device,
+        output_device=output_device,
+        peer_input_device=peer_input_device,
+        tts_engine=None if speak else "none",
         tts_model_path=model_path,
         tts_length_scale=voice_speed,
     )
