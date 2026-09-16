@@ -159,6 +159,16 @@ def check_inbound_route(
     # audio.output_device, so "auto" is judged by what would actually open (the
     # physical microphone and the outbound cable), not by what inbound should use.
     outbound = _resolved_device(outbound_output, "output", "translated_output")
+    if outbound is None:
+        # An unset output plays to the Windows default, and that default can itself
+        # be a cable: installing VB-CABLE A+B can make CABLE-B Input the default.
+        # Judge the device that would really play instead of skipping the checks.
+        outbound = _windows_default_device(list_devices("output"), "output")
+        if outbound is None:
+            raise ValueError(
+                "The outbound direction has no audio.output_device and Windows has no "
+                "default output, so the inbound route cannot be checked for a feedback loop."
+            )
     capture = _resolved_device(inbound_input, "input", "physical_input")
     playback = _resolved_device(inbound_output, "output", "translated_output")
     assert capture is not None and playback is not None  # both names were checked above
@@ -168,7 +178,7 @@ def check_inbound_route(
             f"Inbound output '{playback.name}' is a virtual device. Play inbound speech to "
             "a headset or speakers, or it is fed back into the meeting."
         )
-    if outbound is not None and _same_friendly_endpoint(playback.name, outbound.name):
+    if _same_friendly_endpoint(playback.name, outbound.name):
         raise ValueError(
             f"Inbound output '{playback.name}' is also the outbound direction's output device."
         )
@@ -178,7 +188,7 @@ def check_inbound_route(
             "must capture the meeting from the second cable, never a microphone."
         )
 
-    outbound_cable = _standard_cable_devices([outbound], "output") if outbound else []
+    outbound_cable = _standard_cable_devices([outbound], "output")
     capture_cable = _standard_cable_devices([capture], "input")
     if outbound_cable and capture_cable and outbound_cable[0][1] == capture_cable[0][1]:
         raise ValueError(
@@ -256,18 +266,7 @@ _VIRTUAL_DEFAULT_DEVICE: dict[DeviceKind, str] = {
 
 def _resolve_default_physical_device(candidates: list[AudioDevice], kind: DeviceKind) -> int:
     """Windows' default microphone (input) or headset/speakers (output), never a virtual device."""
-    sd = _sounddevice()
-    default = sd.default.device
-    try:
-        default_index = default[0 if kind == "input" else 1]
-    except (TypeError, IndexError):
-        default_index = default
-    try:
-        default_index = int(default_index)
-    except (TypeError, ValueError):
-        default_index = -1
-
-    selected = next((device for device in candidates if device.index == default_index), None)
+    selected = _windows_default_device(candidates, kind)
     if selected is None:
         raise ValueError(_NO_DEFAULT_DEVICE[kind])
     if _is_virtual_audio_device(selected.name):
@@ -282,8 +281,23 @@ def _resolve_default_physical_device(candidates: list[AudioDevice], kind: Device
     return _preferred_device(same_endpoint or [selected]).index
 
 
+def _windows_default_device(candidates: list[AudioDevice], kind: DeviceKind) -> AudioDevice | None:
+    """The device PortAudio opens when none is named: Windows' default for `kind`."""
+    default = _sounddevice().default.device
+    try:
+        default_index = default[0 if kind == "input" else 1]
+    except (TypeError, IndexError):
+        default_index = default
+    try:
+        default_index = int(default_index)
+    except (TypeError, ValueError):
+        return None
+    return next((device for device in candidates if device.index == default_index), None)
+
+
 _OUTBOUND_CABLE_PRIORITY = ("a", "default", "b")
 _REMOTE_CABLE_IDENTITY = "b"
+_POINT_WORD = re.compile(r"\bPOINT\b")
 
 
 def _resolve_virtual_cable_pair() -> tuple[AudioDevice, AudioDevice]:
@@ -351,9 +365,10 @@ def _standard_cable_devices(
     pattern = re.compile(r"^CABLE(?:-([AB]))?\s+(INPUT|OUTPUT)\b", re.IGNORECASE)
     for device in devices:
         upper = device.name.upper()
-        # VBMatrix exposes "CABLE Output (VB-Audio Point)" as well as lettered
-        # "(VB-Audio Point A)" names, so match the product name, not "POINT ".
-        if "16CH" in upper or "VB-AUDIO POINT" in upper:
+        # Point and mixer-bus endpoints are not cables. VBMatrix names them both
+        # "CABLE Output (VB-Audio Point)" and "(VB-Audio Point A)", so match POINT as a
+        # whole word rather than "POINT " with a trailing space or one brand name.
+        if "16CH" in upper or _POINT_WORD.search(upper):
             continue
         match = pattern.match(device.name)
         if not match or match.group(2).lower() != expected_endpoint:

@@ -156,7 +156,7 @@ class ConverseTests(unittest.TestCase):
                 invalid = replace(inbound, tts=replace(inbound.tts, engine="piper", model_path=missing))
                 with patch("live_translator.profiles.resolve_trusted_path") as resolve:
                     with self.assertRaisesRegex(ValueError, "tts.model_path is required"):
-                        validate_inbound_config(outbound, invalid)
+                        validate_inbound_config(invalid)
                 resolve.assert_not_called()
 
     def test_explicit_inbound_without_voice_path_reports_a_config_error(self) -> None:
@@ -250,6 +250,16 @@ class RouteTestInboundTests(unittest.TestCase):
         self.assertEqual(route.call_args.kwargs["output_role"], "remote_playback")
         self.assertEqual(route.call_args.kwargs["input_role"], "remote_input")
         self.assertIn("PASS: <remote_playback> -> <remote_input>", output)
+
+    def test_inbound_explains_scope_of_a_passing_cable_check(self) -> None:
+        code, _, output = self._run(["--inbound"])
+        self.assertEqual(code, 0)
+        self.assertIn("explicit inbound profiles and headset playback are not validated", output)
+
+    def test_inbound_rejects_an_outbound_device_override(self) -> None:
+        code, route, _ = self._run(["--inbound", "--meeting-microphone-device", "wrong device"])
+        self.assertEqual(code, 1)
+        route.assert_not_called()
 
     def test_inbound_failure_says_the_inbound_direction_will_not_hear_the_meeting(self) -> None:
         code, _, output = self._run(["--inbound"], passed=False)

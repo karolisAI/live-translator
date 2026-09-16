@@ -112,7 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--inbound",
         action="store_true",
         help="test the second cable instead: play a tone into CABLE-B Input, as the meeting "
-        "app will, and listen on CABLE-B Output, where the inbound direction captures",
+        "app will, and listen on CABLE-B Output. Tests the automatic cable pair only, "
+        "not explicit inbound profiles or headset playback",
     )
     route.set_defaults(func=cmd_route_test)
 
@@ -671,6 +672,9 @@ def cmd_route_test(args: argparse.Namespace) -> int:
         args.config = str(default_profile_path(args.profile))
     config = build_config(args)
     if getattr(args, "inbound", False):
+        if args.meeting_microphone_device:
+            raise ValueError("--meeting-microphone-device applies only to the outbound route test; "
+                             "--inbound tests the automatic CABLE-B pair.")
         return _route_test_inbound(config, args.seconds)
     meeting_input = args.meeting_microphone_device or config.audio.peer_input_device
     if not meeting_input:
@@ -715,6 +719,8 @@ def _route_test_inbound(config, seconds: float) -> int:
     direction records CABLE-B Output, so this checks that exact route the same
     way the outbound test checks CABLE Input to CABLE Output.
     """
+    print("Checking the automatic CABLE-B pair only; explicit inbound profiles and "
+          "headset playback are not validated by this test.")
     result = test_output_to_input_route(
         output_device="auto",
         input_device="auto",
@@ -820,7 +826,7 @@ def cmd_converse(args: argparse.Namespace) -> int:
         inbound_output=inbound_config.audio.output_device,
     )
     if args.inbound_config or args.inbound_profile:
-        validate_inbound_config(outbound_config, inbound_config)
+        validate_inbound_config(inbound_config)
 
     directions = [
         _build_direction(outbound_config, args, role="Outbound"),

@@ -310,6 +310,18 @@ class AudioDeviceSelectionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "No complete standard VB-CABLE"):
                 resolve_device_index("auto", "input", role="meeting_input")
 
+    def test_point_endpoint_without_the_vb_audio_brand_is_not_a_cable(self) -> None:
+        # A Point or mixer-bus endpoint named another way must stay excluded too.
+        output_devices = [_output_device(7, "CABLE Input (VB-Audio Virtual Cable)")]
+        input_devices = [_input_device(93, "CABLE Output (Point 3)")]
+
+        with patch(
+            "live_translator.audio.devices.list_devices",
+            side_effect=_inventory(inputs=input_devices, outputs=output_devices),
+        ):
+            with self.assertRaisesRegex(ValueError, "No complete standard VB-CABLE"):
+                resolve_device_index("auto", "input", role="meeting_input")
+
     def test_auto_headset_output_maps_windows_default_to_its_wasapi_endpoint(self) -> None:
         devices = [
             _output_device(7, "CABLE Input (VB-Audio Virtual Cable)"),
@@ -510,6 +522,37 @@ class InboundRouteGuardTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "not CABLE-B"):
                         check_inbound_route(outbound_output=self.OUTPUTS[0].name,
                                             inbound_input=name, inbound_output=self.OUTPUTS[3].name)
+
+    def _check_with_windows_default_output(self, default_output_index: int, **route) -> None:
+        with patch(
+            "live_translator.audio.devices._sounddevice",
+            return_value=_default_sounddevice(30, output_index=default_output_index),
+        ):
+            self._check(**route)
+
+    def test_unset_outbound_output_is_judged_as_the_windows_default(self) -> None:
+        # Installing VB-CABLE A+B can make CABLE-B Input the Windows default output.
+        # With no outbound device named, outbound then plays into the cable inbound
+        # records, which must be refused rather than skipped.
+        route = dict(
+            outbound_output=None,
+            inbound_input="CABLE-B Output (VB-Audio Virtual Cable B)",
+            inbound_output="Headphones (Jabra Evolve2 65)",
+        )
+        with self.assertRaisesRegex(ValueError, "records the outbound direction's cable"):
+            self._check_with_windows_default_output(24, **route)
+        # The same headphones through their MME entry are still the same device.
+        with self.assertRaisesRegex(ValueError, "also the outbound direction's output"):
+            self._check_with_windows_default_output(3, **route)
+
+    def test_unset_outbound_output_without_a_windows_default_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot be checked for a feedback loop"):
+            self._check_with_windows_default_output(
+                -1,
+                outbound_output=None,
+                inbound_input="CABLE-B Output (VB-Audio Virtual Cable B)",
+                inbound_output="Headphones (Jabra Evolve2 65)",
+            )
 
     def test_unset_inbound_devices_are_refused(self) -> None:
         for inbound_input, inbound_output in (

@@ -74,8 +74,13 @@ def inbound_config(outbound: AppConfig, their_language: str | None = None, targe
     return inbound
 
 
-def validate_inbound_config(outbound: AppConfig, inbound: AppConfig) -> None:
-    """Validate explicit overrides against the conversation's inbound contract."""
+def validate_inbound_config(inbound: AppConfig) -> None:
+    """Check an explicit inbound profile is consistent with itself.
+
+    A supported direction, recognition in its translation source language, and a
+    Piper voice in its target language. It is deliberately not compared with the
+    outbound direction, since --inbound-target-language lets both differ.
+    """
     source = inbound.translation.source_language.lower()
     target = inbound.translation.target_language.lower()
     if f"{source}-{target}" not in DIRECTION_SETTINGS:

@@ -531,3 +531,16 @@ An explicit `--inbound-profile` or `--inbound-config` can instead select its own
 languages and matching Piper voice. ASR must match the translation source; input
 must be CABLE-B and output must be a real headset/speaker. Do not combine explicit
 inbound profiles with `--their-language` or `--inbound-target-language`.
+
+### Scope of the inbound cable test
+
+`route-test --profile parakeet-en-de --inbound` sends a tone through the automatically
+selected CABLE-B playback/recording pair. The profile supplies the requested sample
+rate; its audio device selections are not used for this cable-only test. A PASS
+confirms that cable connection, not an explicit inbound profile, headset playback,
+or meeting-app routing. `--meeting-microphone-device` is outbound-only and cannot
+be combined with `--inbound`.
+
+Use `doctor --profile parakeet-en-de --inbound` to check the automatically derived
+inbound route and its assets. Explicit inbound profiles are checked by `converse`
+at startup; verify headset playback and meeting-app routing in an actual call.
