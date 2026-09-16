@@ -12,7 +12,7 @@ name: pr-checks
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     # "edited" is required so that fixing a bad title (or filling in the
     # description) re-runs this check and can turn it green without an extra
     # commit. The default set omits it.
