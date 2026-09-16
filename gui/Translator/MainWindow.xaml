@@ -145,7 +145,7 @@
                                 </Style.Triggers>
                             </Style>
                         </Border.Style>
-                        <CheckBox x:Name="ConfidentialModeCheckBox" Content="Confidential mode" FontSize="12" FontWeight="SemiBold">
+                        <CheckBox x:Name="ConfidentialModeCheckBox" Content="Confidential mode" ToolTip="Disables diagnostic audio and transcript capture" FontSize="12" FontWeight="SemiBold">
                             <CheckBox.Style>
                                 <Style TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
                                     <Setter Property="Foreground" Value="#176B61"/>
@@ -183,11 +183,11 @@
                         <TextBlock Text="Your session" Style="{StaticResource SectionHeading}"/>
                         <TextBlock Text="My translated voice" Style="{StaticResource FieldLabel}"/>
                         <ComboBox x:Name="QuickMyVoiceComboBox" Margin="0,0,0,18">
-                            <ComboBoxItem Content="Thorsten · Male"/><ComboBoxItem Content="Katja · Female"/><ComboBoxItem Content="Automatic · Match language"/>
+                            <ComboBoxItem Content="Male · Match target language"/><ComboBoxItem Content="Female · Match target language"/><ComboBoxItem Content="Automatic · Match target language"/>
                         </ComboBox>
                         <TextBlock Text="Their translated voice" Style="{StaticResource FieldLabel}"/>
                         <ComboBox x:Name="QuickTheirVoiceComboBox">
-                            <ComboBoxItem Content="HFC · Female"/><ComboBoxItem Content="Alan · Male"/><ComboBoxItem Content="Automatic · Match language"/>
+                            <ComboBoxItem Content="Female · Match target language"/><ComboBoxItem Content="Male · Match target language"/><ComboBoxItem Content="Automatic · Match target language"/>
                         </ComboBox>
                         <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,24,0,14"/>
                         <CheckBox x:Name="QuickMyTranscriptCheckBox" Content="My transcript" IsChecked="True"/>
@@ -254,7 +254,7 @@
                                     <StackPanel Grid.Column="2"><TextBlock Text="I want to be heard in" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="MyTargetLanguageComboBox"><ComboBoxItem Content="German"/><ComboBoxItem Content="English"/><ComboBoxItem Content="Lithuanian"/></ComboBox></StackPanel>
                                 </Grid>
                                 <TextBlock Text="My translated voice" Style="{StaticResource FieldLabel}"/>
-                                <ComboBox x:Name="MyVoiceComboBox" Margin="0,0,0,16"><ComboBoxItem Content="Thorsten · Male"/><ComboBoxItem Content="Katja · Female"/><ComboBoxItem Content="Automatic · Match language"/></ComboBox>
+                                <ComboBox x:Name="MyVoiceComboBox" Margin="0,0,0,16"><ComboBoxItem Content="Male · Match target language"/><ComboBoxItem Content="Female · Match target language"/><ComboBoxItem Content="Automatic · Match target language"/></ComboBox>
                                 <Grid><TextBlock Text="Voice speed" Style="{StaticResource FieldLabel}"/><TextBlock Text="1.0×" Style="{StaticResource FieldLabel}" HorizontalAlignment="Right"/></Grid>
                                 <Slider x:Name="MyVoiceSpeedSlider" Minimum="0.5" Maximum="1.5" Value="1" TickFrequency="0.1" IsSnapToTickEnabled="True" Margin="0,0,0,18"/>
                                 <TextBlock Text="My microphone · Audio source" Style="{StaticResource FieldLabel}"/>
@@ -274,7 +274,7 @@
                                     <StackPanel Grid.Column="2"><TextBlock Text="Translate for me into" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="TheirTargetLanguageComboBox"><ComboBoxItem Content="English"/><ComboBoxItem Content="German"/><ComboBoxItem Content="Lithuanian"/></ComboBox></StackPanel>
                                 </Grid>
                                 <TextBlock Text="Their translated voice" Style="{StaticResource FieldLabel}"/>
-                                <ComboBox x:Name="TheirVoiceComboBox" Margin="0,0,0,16"><ComboBoxItem Content="HFC · Female"/><ComboBoxItem Content="Alan · Male"/><ComboBoxItem Content="Automatic · Match language"/></ComboBox>
+                                <ComboBox x:Name="TheirVoiceComboBox" Margin="0,0,0,16"><ComboBoxItem Content="Female · Match target language"/><ComboBoxItem Content="Male · Match target language"/><ComboBoxItem Content="Automatic · Match target language"/></ComboBox>
                                 <Grid><TextBlock Text="Voice speed" Style="{StaticResource FieldLabel}"/><TextBlock Text="1.0×" Style="{StaticResource FieldLabel}" HorizontalAlignment="Right"/></Grid>
                                 <Slider x:Name="TheirVoiceSpeedSlider" Minimum="0.5" Maximum="1.5" Value="1" TickFrequency="0.1" IsSnapToTickEnabled="True" Margin="0,0,0,18"/>
                                 <TextBlock Text="Other people’s audio · Audio source" Style="{StaticResource FieldLabel}"/>

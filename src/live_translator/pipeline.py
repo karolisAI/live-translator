@@ -355,7 +355,7 @@ class LocalTranslatorPipeline:
             return None
 
         translated = translator.translate(transcript.text)
-        if self._show_text:
+        if self._event_sink is not None:
             self._emit_event(
                 "translation",
                 source_language=self._config.translation.source_language,

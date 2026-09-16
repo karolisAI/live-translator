@@ -37,10 +37,10 @@ class FakeSpeaker:
 
 
 class PipelineTests(unittest.TestCase):
-    def test_show_text_emits_structured_translation_event_for_gui(self) -> None:
+    def test_gui_event_sink_receives_text_without_terminal_show_text(self) -> None:
         events: list[dict[str, object]] = []
         pipeline = LocalTranslatorPipeline(AppConfig(), event_sink=events.append)
-        pipeline._show_text = True
+        pipeline._show_text = False
         speaker = FakeSpeaker()
 
         class FakeTranslator:

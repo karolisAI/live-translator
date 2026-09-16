@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 
 namespace Translator.Services;
@@ -7,11 +8,17 @@ internal sealed record BackendStartOptions(
     string OutboundProfile,
     string TheirLanguage,
     string InboundTargetLanguage,
-    bool ShowText);
+    string? OutboundVoice,
+    string? InboundVoice,
+    double OutboundVoiceSpeed,
+    double InboundVoiceSpeed,
+    bool Confidential,
+    bool Diagnostics);
 
 internal sealed class LiveTranslatorBackend : IDisposable
 {
     private Process? _process;
+    private Process? _stoppingProcess;
 
     public event Action<string>? OutputReceived;
     public event Action<string>? ErrorReceived;
@@ -35,8 +42,17 @@ internal sealed class LiveTranslatorBackend : IDisposable
         startInfo.ArgumentList.Add("--event-format");
         startInfo.ArgumentList.Add("jsonl");
 
-        if (options.ShowText)
-            startInfo.ArgumentList.Add("--show-text");
+        AddOptionalArgument(startInfo, "--outbound-voice", options.OutboundVoice);
+        AddOptionalArgument(startInfo, "--inbound-voice", options.InboundVoice);
+        startInfo.ArgumentList.Add("--outbound-voice-speed");
+        startInfo.ArgumentList.Add(options.OutboundVoiceSpeed.ToString("0.0", CultureInfo.InvariantCulture));
+        startInfo.ArgumentList.Add("--inbound-voice-speed");
+        startInfo.ArgumentList.Add(options.InboundVoiceSpeed.ToString("0.0", CultureInfo.InvariantCulture));
+
+        if (options.Confidential)
+            startInfo.ArgumentList.Add("--confidential");
+        else if (options.Diagnostics)
+            startInfo.ArgumentList.Add("--diagnostics");
 
         var process = new Process
         {
@@ -45,15 +61,24 @@ internal sealed class LiveTranslatorBackend : IDisposable
         };
         process.OutputDataReceived += (_, args) =>
         {
-            if (!string.IsNullOrWhiteSpace(args.Data))
+            if (!ReferenceEquals(_stoppingProcess, process) &&
+                !string.IsNullOrWhiteSpace(args.Data))
                 OutputReceived?.Invoke(args.Data);
         };
         process.ErrorDataReceived += (_, args) =>
         {
-            if (!string.IsNullOrWhiteSpace(args.Data))
+            if (!ReferenceEquals(_stoppingProcess, process) &&
+                !string.IsNullOrWhiteSpace(args.Data))
                 ErrorReceived?.Invoke(args.Data);
         };
-        process.Exited += (_, _) => Exited?.Invoke(process.ExitCode);
+        process.Exited += (_, _) =>
+        {
+            var wasStopped = ReferenceEquals(_stoppingProcess, process);
+            if (ReferenceEquals(_process, process))
+                _process = null;
+            if (!wasStopped)
+                Exited?.Invoke(process.ExitCode);
+        };
 
         if (!process.Start())
             throw new InvalidOperationException("Live Translator backend could not be started.");
@@ -69,11 +94,23 @@ internal sealed class LiveTranslatorBackend : IDisposable
         if (process is null || process.HasExited)
             return;
 
-        // The current CLI has no control channel yet. Terminating the process
-        // is an MVP bridge; replace this with a graceful stop command when the
-        // backend protocol is added.
-        process.Kill(entireProcessTree: true);
-        await process.WaitForExitAsync();
+        _stoppingProcess = process;
+        _process = null;
+        try
+        {
+            process.EnableRaisingEvents = false;
+            // The current CLI has no control channel yet. Terminating the process
+            // is an MVP bridge; replace this with a graceful stop command when the
+            // backend protocol is added.
+            process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync();
+        }
+        finally
+        {
+            process.Dispose();
+            if (ReferenceEquals(_stoppingProcess, process))
+                _stoppingProcess = null;
+        }
     }
 
     public void Dispose()
@@ -128,6 +165,18 @@ internal sealed class LiveTranslatorBackend : IDisposable
         StandardErrorEncoding = System.Text.Encoding.UTF8,
         Environment = { ["PYTHONUNBUFFERED"] = "1" },
     };
+
+    private static void AddOptionalArgument(
+        ProcessStartInfo startInfo,
+        string name,
+        string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return;
+
+        startInfo.ArgumentList.Add(name);
+        startInfo.ArgumentList.Add(value);
+    }
 
     private static string? FindRepositoryRoot()
     {

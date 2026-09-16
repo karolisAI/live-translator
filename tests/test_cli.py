@@ -113,6 +113,7 @@ class ConverseTests(unittest.TestCase):
                     str(profile),
                     "--event-format",
                     "jsonl",
+                    "--confidential",
                 ]
             )
 
@@ -125,6 +126,65 @@ class ConverseTests(unittest.TestCase):
 
         events = [json.loads(line) for line in output.getvalue().splitlines()]
         self.assertEqual([event["role"] for event in events], ["outbound", "inbound"])
+        self.assertEqual([event["confidential"] for event in events], [True, True])
+
+    def test_converse_applies_independent_voices_and_speeds(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            profile = self._profile(temp_dir, "en-de")
+            code, pipeline, _, stderr = self._run(
+                [
+                    "converse",
+                    "--outbound-config",
+                    str(profile),
+                    "--outbound-voice",
+                    "female",
+                    "--inbound-voice",
+                    "female",
+                    "--outbound-voice-speed",
+                    "1.2",
+                    "--inbound-voice-speed",
+                    "0.8",
+                ]
+            )
+
+        self.assertEqual(code, 0, stderr)
+        outbound, inbound = (call.args[0] for call in pipeline.call_args_list)
+        self.assertEqual(outbound.tts.model_path, "models/tts/de_DE-kerstin-low.onnx")
+        self.assertEqual(inbound.tts.model_path, "models/tts/en_US-hfc_female-medium.onnx")
+        self.assertEqual(outbound.tts.length_scale, 1.2)
+        self.assertEqual(inbound.tts.length_scale, 0.8)
+
+    def test_confidential_mode_disables_profile_diagnostics(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            profile = self._profile(temp_dir, "en-de")
+            payload = yaml.safe_load(profile.read_text())
+            payload["diagnostics"] = {"enabled": True, "dir": "captured"}
+            profile.write_text(yaml.safe_dump(payload))
+            code, pipeline, _, stderr = self._run(
+                ["converse", "--outbound-config", str(profile), "--confidential"]
+            )
+
+        self.assertEqual(code, 0, stderr)
+        for call in pipeline.call_args_list:
+            self.assertFalse(call.args[0].diagnostics.enabled)
+            self.assertIsNone(call.args[0].diagnostics.dir)
+
+    def test_converse_diagnostics_reaches_both_directions(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            profile = self._profile(temp_dir, "en-de")
+            code, pipeline, _, stderr = self._run(
+                ["converse", "--outbound-config", str(profile), "--diagnostics"],
+                real_session=True,
+            )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(pipeline.return_value.run_prepared.call_count, 2)
+        self.assertTrue(
+            all(
+                call.kwargs["diagnostics"]
+                for call in pipeline.return_value.run_prepared.call_args_list
+            )
+        )
 
     def test_refuses_a_looping_inbound_profile_before_loading_anything(self) -> None:
         # A de-en profile written by setup plays into the outbound cable, which

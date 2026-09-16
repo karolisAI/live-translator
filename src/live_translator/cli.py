@@ -4,6 +4,7 @@ import argparse
 import json
 import importlib.util
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
@@ -273,6 +274,31 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("text", "jsonl"),
         default="text",
         help="machine-readable output format for desktop clients",
+    )
+    converse.add_argument(
+        "--outbound-voice",
+        choices=("male", "female"),
+        default=None,
+        help="bundled Piper voice for speech sent to the other participant",
+    )
+    converse.add_argument(
+        "--inbound-voice",
+        choices=("male", "female"),
+        default=None,
+        help="bundled Piper voice for translated speech heard locally",
+    )
+    converse.add_argument("--outbound-voice-speed", type=float, default=None)
+    converse.add_argument("--inbound-voice-speed", type=float, default=None)
+    privacy = converse.add_mutually_exclusive_group()
+    privacy.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="capture both directions for troubleshooting",
+    )
+    privacy.add_argument(
+        "--confidential",
+        action="store_true",
+        help="guarantee that diagnostic audio and text capture is disabled",
     )
     converse.add_argument("--verbose", action="store_true", help="show audio gates and per-segment timings")
     converse.set_defaults(func=cmd_converse)
@@ -839,6 +865,18 @@ def cmd_converse(args: argparse.Namespace) -> int:
         inbound_config = wire_inbound_devices(
             derive_inbound_config(outbound_config, args.their_language, args.inbound_target_language or "en")
         )
+    outbound_config = _apply_converse_overrides(
+        outbound_config,
+        voice=args.outbound_voice,
+        voice_speed=args.outbound_voice_speed,
+        confidential=args.confidential,
+    )
+    inbound_config = _apply_converse_overrides(
+        inbound_config,
+        voice=args.inbound_voice,
+        voice_speed=args.inbound_voice_speed,
+        confidential=args.confidential,
+    )
     # Before anything is loaded or opened: an inbound route that plays into the
     # meeting's cable, or captures a microphone or the outbound cable, would loop
     # audio back into the call. This applies to explicit inbound profiles too.
@@ -921,7 +959,13 @@ def _build_direction(
         role_name = role.lower()
 
         def role_event_sink(event: dict[str, object]) -> None:
-            event_sink({**event, "role": role_name})
+            event_sink(
+                {
+                    **event,
+                    "role": role_name,
+                    "confidential": args.confidential,
+                }
+            )
 
     pipeline = LocalTranslatorPipeline(config, event_sink=role_event_sink)
     return Direction(
@@ -931,10 +975,37 @@ def _build_direction(
             stop_event=stop,
             label=l,
             verbose=args.verbose,
+            diagnostics=args.diagnostics,
             show_text=args.show_text,
         ),
         close=pipeline.close,
     )
+
+
+def _apply_converse_overrides(
+    config: AppConfig,
+    *,
+    voice: str | None,
+    voice_speed: float | None,
+    confidential: bool,
+) -> AppConfig:
+    model_path = None
+    if voice is not None:
+        if config.tts.engine.lower() not in {"piper", "piper-cli"}:
+            raise ValueError("Voice selection requires the Piper TTS engine.")
+        model_path = voice_model(config.translation.target_language, voice)
+
+    updated = apply_cli_overrides(
+        config,
+        tts_model_path=model_path,
+        tts_length_scale=voice_speed,
+    )
+    if confidential:
+        updated = replace(
+            updated,
+            diagnostics=replace(updated.diagnostics, enabled=False, dir=None),
+        )
+    return updated
 
 
 def build_config(args: argparse.Namespace):
