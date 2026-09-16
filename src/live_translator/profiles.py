@@ -38,13 +38,13 @@ DIRECTION_SETTINGS: dict[str, dict[str, Any]] = {
 INBOUND_TARGET_LANGUAGE = "en"
 
 
-def inbound_config(outbound: AppConfig, their_language: str | None = None) -> AppConfig:
+def inbound_config(outbound: AppConfig, their_language: str | None = None, target_language: str = INBOUND_TARGET_LANGUAGE) -> AppConfig:
     """The inbound direction's config: the outbound direction with languages reversed.
 
     The remote party speaks `their_language` (by default, the language the
-    outbound direction translates into) and the user hears English. So speech
-    recognition and translation both read their language, translation writes
-    English, and Piper uses the English voice for that direction.
+    outbound direction translates into) and target_language selects what the user hears (English by default).
+    Recognition and translation share the source language; Piper uses the
+    bundled voice for the selected target language.
 
     Engines, model, thread count, chunking and queue settings are copied from the
     outbound config, so both directions run the same stack. The audio section is
@@ -52,16 +52,11 @@ def inbound_config(outbound: AppConfig, their_language: str | None = None) -> Ap
     separately and must be set before this config is run.
     """
     language = (their_language or outbound.translation.target_language).lower()
-    direction = f"{language}-{INBOUND_TARGET_LANGUAGE}"
+    direction = f"{language}-{target_language.lower()}"
     if direction not in DIRECTION_SETTINGS:
-        supported = ", ".join(
-            name.split("-")[0]
-            for name in SUPPORTED_DIRECTIONS
-            if name.endswith(f"-{INBOUND_TARGET_LANGUAGE}")
-        )
         raise ValueError(
-            f"Unsupported remote language '{language}' for the inbound direction. "
-            f"Use one of: {supported}"
+            f"Unsupported remote language direction '{direction}'. "
+            f"Use one of: {', '.join(SUPPORTED_DIRECTIONS)}"
         )
 
     settings = DIRECTION_SETTINGS[direction]
@@ -81,27 +76,24 @@ def inbound_config(outbound: AppConfig, their_language: str | None = None) -> Ap
 
 def validate_inbound_config(outbound: AppConfig, inbound: AppConfig) -> None:
     """Validate explicit overrides against the conversation's inbound contract."""
-    expected = inbound_config(outbound)
-    if (
-        (inbound.asr.source_language or "").lower() != expected.asr.source_language
-        or inbound.translation.source_language.lower() != expected.translation.source_language
-        or inbound.translation.target_language.lower() != INBOUND_TARGET_LANGUAGE
-    ):
-        raise ValueError(
-            "Inbound recognition and translation must use "
-            f"{expected.asr.source_language}->en, matching the outbound target language."
-        )
+    source = inbound.translation.source_language.lower()
+    target = inbound.translation.target_language.lower()
+    if f"{source}-{target}" not in DIRECTION_SETTINGS:
+        raise ValueError(f"Unsupported inbound direction '{source}-{target}'.")
+    if (inbound.asr.source_language or "").lower() != source:
+        raise ValueError(f"Inbound recognition must use {source}, matching translation.source_language.")
+    voice_name = {"en": "English", "de": "German"}[target]
     if inbound.tts.engine.lower() not in {"piper", "piper-cli"}:
-        raise ValueError("Inbound speech requires an English Piper voice.")
+        raise ValueError(f"Inbound speech requires a {voice_name} Piper voice.")
     if not inbound.tts.model_path:
-        raise ValueError("tts.model_path is required for the inbound English Piper voice.")
+        raise ValueError("tts.model_path is required for the inbound Piper voice.")
     model = resolve_trusted_path(inbound.tts.model_path)
     metadata_path = resolve_trusted_path(model.with_suffix(".onnx.json"))
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     language = metadata.get("language", {}) if isinstance(metadata, dict) else {}
     code = language.get("code", "") if isinstance(language, dict) else ""
-    if not isinstance(code, str) or code.lower().replace("-", "_").split("_")[0] != "en":
-        raise ValueError("Inbound speech requires an English Piper voice (language.code in its metadata).")
+    if not isinstance(code, str) or code.lower().replace("-", "_").split("_")[0] != target:
+        raise ValueError(f"Inbound speech requires a {voice_name} Piper voice (language.code in its metadata).")
 
 
 def wire_inbound_devices(inbound: AppConfig) -> AppConfig:

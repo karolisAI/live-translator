@@ -505,3 +505,29 @@ Additional references:
 
 Benchmark write-ups and their audio live in `research/`, which is not tracked in
 Git.
+
+## Choose the incoming translation language
+
+Translate both your English microphone speech and incoming English speech to German:
+
+```powershell
+live-translator converse --outbound-profile parakeet-en-de --their-language en --inbound-target-language de
+```
+
+Microphone translations go to the meeting cable. Incoming audio is captured from
+CABLE-B Output and translated speech plays through your headset. Keep the physical
+microphone and headset as Windows defaults; set the meeting app microphone to
+CABLE-A Output and its speaker to CABLE-B Input.
+
+Check this configuration before starting:
+
+```powershell
+live-translator doctor --profile parakeet-en-de --inbound --their-language en --inbound-target-language de
+```
+
+Without these flags, incoming translation defaults to the outbound target language
+to English. Supported incoming directions are `en-de` and `de-en`.
+An explicit `--inbound-profile` or `--inbound-config` can instead select its own
+languages and matching Piper voice. ASR must match the translation source; input
+must be CABLE-B and output must be a real headset/speaker. Do not combine explicit
+inbound profiles with `--their-language` or `--inbound-target-language`.

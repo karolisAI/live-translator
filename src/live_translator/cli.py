@@ -144,6 +144,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="also check the inbound direction converse derives from this profile: "
         "second cable in, headset out, feedback-loop guard, translation and voice",
     )
+    doctor.add_argument("--inbound-target-language", choices=("en", "de"), default=None,
+                        help="language heard through the headset (default: en); derived inbound only")
     doctor.add_argument(
         "--their-language",
         default=None,
@@ -256,6 +258,8 @@ def build_parser() -> argparse.ArgumentParser:
         "it from the outbound profile (second cable CABLE-B in, Windows default headset out)",
     )
     converse.add_argument("--inbound-profile", default=None, help="profile name for the inbound direction")
+    converse.add_argument("--inbound-target-language", choices=("en", "de"), default=None,
+                        help="language heard through the headset (default: en); derived inbound only")
     converse.add_argument(
         "--their-language",
         default=None,
@@ -407,6 +411,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             prepare_models=args.prepare_models,
             inbound=inbound,
             their_language=getattr(args, "their_language", None),
+            inbound_target_language=getattr(args, "inbound_target_language", None) or "en",
         )
     if missing_required:
         print("Install required packages with: python -m pip install -e .")
@@ -430,6 +435,7 @@ def _print_config_checks(
     prepare_models: bool,
     inbound: bool = False,
     their_language: str | None = None,
+    inbound_target_language: str = "en",
 ) -> bool:
     checks: list[tuple[str, Callable[[], str]]] = [
         (
@@ -481,7 +487,7 @@ def _print_config_checks(
     checks.append(("translation", prepare_translation))
     checks.append(("speech.output", validate_tts))
     if inbound:
-        checks.extend(_inbound_checks(config, their_language))
+        checks.extend(_inbound_checks(config, their_language, inbound_target_language))
     if prepare_models:
         checks.append(("speech.model", lambda: _prepare_asr_model(config)))
 
@@ -500,7 +506,7 @@ def _print_config_checks(
     return passed
 
 
-def _inbound_checks(config, their_language: str | None) -> list[tuple[str, Callable[[], str]]]:
+def _inbound_checks(config, their_language: str | None, target_language: str = "en") -> list[tuple[str, Callable[[], str]]]:
     """Checks for the inbound direction that converse derives from this profile.
 
     The first check derives the direction and runs the feedback-loop guard; the
@@ -510,7 +516,7 @@ def _inbound_checks(config, their_language: str | None) -> list[tuple[str, Calla
     derived: list[AppConfig] = []
 
     def route() -> str:
-        inbound = wire_inbound_devices(derive_inbound_config(config, their_language))
+        inbound = wire_inbound_devices(derive_inbound_config(config, their_language, target_language))
         check_inbound_route(
             outbound_output=config.audio.output_device,
             inbound_input=inbound.audio.input_device,
@@ -795,15 +801,15 @@ def cmd_loopback(args: argparse.Namespace) -> int:
 def cmd_converse(args: argparse.Namespace) -> int:
     outbound_config = _resolve_direction_config(args.outbound_config, args.outbound_profile, "outbound")
     if args.inbound_config or args.inbound_profile:
-        if args.their_language:
+        if args.their_language or args.inbound_target_language:
             raise ValueError(
-                "--their-language only applies to a derived inbound direction; "
+                "--their-language and --inbound-target-language only apply to a derived inbound direction; "
                 "drop it or drop --inbound-config/--inbound-profile"
             )
         inbound_config = _resolve_direction_config(args.inbound_config, args.inbound_profile, "inbound")
     else:
         inbound_config = wire_inbound_devices(
-            derive_inbound_config(outbound_config, args.their_language)
+            derive_inbound_config(outbound_config, args.their_language, args.inbound_target_language or "en")
         )
     # Before anything is loaded or opened: an inbound route that plays into the
     # meeting's cable, or captures a microphone or the outbound cable, would loop
@@ -817,8 +823,8 @@ def cmd_converse(args: argparse.Namespace) -> int:
         validate_inbound_config(outbound_config, inbound_config)
 
     directions = [
-        _build_direction(outbound_config, args),
-        _build_direction(inbound_config, args),
+        _build_direction(outbound_config, args, role="Outbound"),
+        _build_direction(inbound_config, args, role="Inbound"),
     ]
     # Initialise PortAudio on the main thread first: each direction opens its
     # streams from its own worker thread, and PortAudio's first-time init is not
@@ -868,11 +874,13 @@ def _resolve_direction_config(config_path: str | None, profile: str | None, role
     return load_config(path)
 
 
-def _build_direction(config, args: argparse.Namespace) -> Direction:
+def _build_direction(config, args: argparse.Namespace, *, role: str = "") -> Direction:
     label = (
         f"{config.translation.source_language.upper()}->"
         f"{config.translation.target_language.upper()}"
     )
+    if role:
+        label = f"{role} {label}"
     pipeline = LocalTranslatorPipeline(config)
     return Direction(
         label=label,

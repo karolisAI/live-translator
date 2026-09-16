@@ -239,6 +239,15 @@ class DoctorInboundTests(unittest.TestCase):
         self.assertEqual(inbound_translation.source_language, "de")
         self.assertEqual(inbound_translation.target_language, "en")
 
+    def test_reports_selected_inbound_target_language(self) -> None:
+        passed, output, mocks = self._config_checks(
+            self.WITH_CABLE_B, inbound=True, their_language="en", inbound_target_language="de"
+        )
+        self.assertTrue(passed, output)
+        self.assertRegex(output, r"OK\s+inbound\.mt\s+argos en->de")
+        self.assertIn("models/tts/de_DE-thorsten-medium.onnx", output)
+        self.assertEqual(mocks.translation.call_args_list[-1].args[0].target_language, "de")
+
     def test_without_the_second_cable_gives_one_reason_and_skips_the_rest(self) -> None:
         without_cable_b = [entry for entry in self.WITH_CABLE_B if "CABLE-B" not in entry[2]]
 

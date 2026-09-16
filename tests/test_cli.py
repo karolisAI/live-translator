@@ -14,6 +14,7 @@ from live_translator.asr.model_store import recorded_revision
 from live_translator.audio.devices import AudioDevice
 from live_translator.cli import build_parser, cmd_prepare_models, main
 from live_translator.defaults import ASR_MODEL_REVISION
+from live_translator.session import BidirectionalSession
 from live_translator.config import AppConfig
 from live_translator.profiles import inbound_config, validate_inbound_config, write_meeting_profile
 from test_model_store import network_blocked, prepare_dir
@@ -64,7 +65,7 @@ class ConverseTests(unittest.TestCase):
             meeting_microphone_device="auto",
         )
 
-    def _run(self, argv: list[str]):
+    def _run(self, argv: list[str], *, real_session: bool = False):
         stderr = io.StringIO()
         with (
             patch("live_translator.audio.devices.list_devices", side_effect=_list_converse_devices),
@@ -77,7 +78,8 @@ class ConverseTests(unittest.TestCase):
             ),
             patch("live_translator.cli.ensure_audio_ready"),
             patch("live_translator.cli.LocalTranslatorPipeline") as pipeline,
-            patch("live_translator.cli.BidirectionalSession") as session,
+            patch("live_translator.cli.BidirectionalSession",
+                  side_effect=BidirectionalSession if real_session else None) as session,
             redirect_stdout(io.StringIO()),
             redirect_stderr(stderr),
         ):
@@ -118,9 +120,10 @@ class ConverseTests(unittest.TestCase):
 
     def test_explicit_inbound_language_and_voice_are_validated_before_startup(self) -> None:
         cases = (
-            ("en-de", "en_US", False, "must use de->en"),
+            ("en-de", "en_US", False, "German Piper voice"),
             ("de-en", "de_DE", False, "English Piper voice"),
             ("de-en", "en_US", True, ""),
+            ("en-de", "de_DE", True, ""),
         )
         for direction, voice_language, accepted, error in cases:
             with self.subTest(direction=direction, voice_language=voice_language), TemporaryDirectory() as temp:
@@ -171,6 +174,29 @@ class ConverseTests(unittest.TestCase):
         self.assertNotIn("Traceback", stderr)
         pipeline.assert_not_called()
         session.assert_not_called()
+
+    def test_both_directions_can_translate_english_to_german(self) -> None:
+        with TemporaryDirectory() as temp:
+            outbound = self._profile(temp, "en-de")
+            code, pipeline, session, stderr = self._run([
+                "converse", "--outbound-config", str(outbound),
+                "--their-language", "en", "--inbound-target-language", "de",
+            ], real_session=True)
+        self.assertEqual(code, 0, stderr)
+        incoming = pipeline.call_args_list[1].args[0]
+        self.assertEqual(incoming.asr.source_language, "en")
+        self.assertEqual(incoming.translation.source_language, "en")
+        self.assertEqual(incoming.translation.target_language, "de")
+        self.assertEqual(incoming.tts.model_path, "models/tts/de_DE-thorsten-medium.onnx")
+        self.assertEqual(incoming.audio.input_device, CONVERSE_DEVICES[2].name)
+        self.assertEqual(incoming.audio.output_device, CONVERSE_DEVICES[-1].name)
+        directions = session.call_args.args[0]
+        self.assertEqual([d.label for d in directions], ["Outbound EN->DE", "Inbound EN->DE"])
+        self.assertEqual(pipeline.return_value.run_prepared.call_count, 2)
+        self.assertEqual(
+            {call.kwargs["label"] for call in pipeline.return_value.run_prepared.call_args_list},
+            {"Outbound EN->DE", "Inbound EN->DE"},
+        )
 
     def test_their_language_needs_a_derived_inbound_direction(self) -> None:
         with TemporaryDirectory() as temp_dir:
