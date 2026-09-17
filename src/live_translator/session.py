@@ -55,6 +55,10 @@ class BidirectionalSession:
         self._threads: list[Thread] = []
         self._failures: dict[str, BaseException] = {}
 
+    @property
+    def has_failures(self) -> bool:
+        return bool(self._failures)
+
     def stop(self) -> None:
         """Ask every direction to wind down. Idempotent; safe from any thread."""
         self._session_stop.set()

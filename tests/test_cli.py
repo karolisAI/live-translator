@@ -56,6 +56,20 @@ class ConverseTests(unittest.TestCase):
     faked, so nothing loads models or opens a stream.
     """
 
+    def test_lists_input_and_output_devices_in_one_jsonl_query(self) -> None:
+        output = io.StringIO()
+        with (
+            patch("live_translator.cli.list_devices", return_value=CONVERSE_DEVICES),
+            redirect_stdout(output),
+        ):
+            code = main(["list-audio-devices", "--format", "jsonl"])
+
+        self.assertEqual(code, 0)
+        devices = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertTrue(any(device["input"] for device in devices))
+        self.assertTrue(any(device["output"] for device in devices))
+        self.assertTrue(all("host_api" in device for device in devices))
+
     def _profile(self, temp_dir: str, direction: str) -> Path:
         return write_meeting_profile(
             path=Path(temp_dir) / f"{direction}.yaml",

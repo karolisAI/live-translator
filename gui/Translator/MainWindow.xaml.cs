@@ -1,7 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
-using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.IO;
 using Translator.Services;
@@ -15,15 +14,11 @@ namespace Translator
         private bool _synchronizingControls;
         private bool _restartInProgress;
         private readonly HashSet<string> _activeDirections = new(StringComparer.OrdinalIgnoreCase);
-        private string? _pendingSourceText;
         private readonly LiveTranslatorBackend _backend = new();
         private static readonly string SettingsPath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "LiveTranslator",
             "gui-settings.json");
-        private static readonly Regex TranslationLine = new(
-            @"^(?<language>[A-Z]{2})(?: \[low confidence\])?: (?<text>.+)$",
-            RegexOptions.Compiled);
 
         public MainWindow()
         {
@@ -67,15 +62,12 @@ namespace Translator
         {
             try
             {
-                var inputsTask = LiveTranslatorBackend.ListDevicesAsync("input");
-                var outputsTask = LiveTranslatorBackend.ListDevicesAsync("output");
-                await Task.WhenAll(inputsTask, outputsTask);
-
-                PopulateDevices(MyMicrophoneComboBox, inputsTask.Result);
-                PopulateDevices(MeetingMicrophoneComboBox, inputsTask.Result);
-                PopulateDevices(TheirAudioSourceComboBox, inputsTask.Result);
-                PopulateDevices(MyAudioOutputComboBox, outputsTask.Result);
-                PopulateDevices(TheirAudioOutputComboBox, outputsTask.Result);
+                var devices = await LiveTranslatorBackend.ListDevicesAsync();
+                PopulateDevices(MyMicrophoneComboBox, devices.Inputs);
+                PopulateDevices(MeetingMicrophoneComboBox, devices.Inputs);
+                PopulateDevices(TheirAudioSourceComboBox, devices.Inputs);
+                PopulateDevices(MyAudioOutputComboBox, devices.Outputs);
+                PopulateDevices(TheirAudioOutputComboBox, devices.Outputs);
             }
             catch (Exception exception)
             {
@@ -203,7 +195,6 @@ namespace Translator
             try
             {
                 _stopRequested = false;
-                _pendingSourceText = null;
                 _activeDirections.Clear();
                 SynchronizeConversationControls();
                 _backend.Start(new BackendStartOptions(
@@ -382,7 +373,6 @@ namespace Translator
                 SetSessionStatus(status, "#F59E0B");
                 _stopRequested = true;
                 await _backend.StopAsync();
-                await Task.Delay(750);
                 StartTranslationFromSettings();
             }
             finally
@@ -399,23 +389,7 @@ namespace Translator
 
         private void HandleBackendOutput(string line)
         {
-            if (TryHandleBackendEvent(line))
-                return;
-
-            var match = TranslationLine.Match(line);
-            if (!match.Success)
-                return;
-
-            if (_pendingSourceText is null)
-            {
-                _pendingSourceText = match.Groups["text"].Value;
-                LatestSourceText.Text = _pendingSourceText;
-                return;
-            }
-
-            LatestTranslationLabel.Text = $"TRANSLATION · {match.Groups["language"].Value}";
-            LatestTranslationText.Text = match.Groups["text"].Value;
-            _pendingSourceText = null;
+            TryHandleBackendEvent(line);
         }
 
         private bool TryHandleBackendEvent(string line)
@@ -454,6 +428,19 @@ namespace Translator
                     return true;
                 }
 
+                if (type.GetString() is "error" or "warning")
+                {
+                    var message = root.TryGetProperty("message", out var messageElement)
+                        ? messageElement.GetString() ?? "Backend reported a problem."
+                        : "Backend reported a problem.";
+                    var isError = type.GetString() == "error";
+                    SetSessionStatus(
+                        isError ? "Translation error" : "Translation warning",
+                        isError ? "#DC2626" : "#F59E0B");
+                    LatestTranslationText.Text = message;
+                    return true;
+                }
+
                 if (type.GetString() != "translation")
                     return false;
 
@@ -478,7 +465,6 @@ namespace Translator
                     LatestTranslationLabel.Text =
                         $"TRANSLATION · {targetLanguage.ToUpperInvariant()}";
                 }
-                _pendingSourceText = null;
                 return true;
             }
             catch (JsonException)
@@ -489,11 +475,13 @@ namespace Translator
 
         private void HandleBackendError(string line)
         {
-            if (_stopRequested ||
-                !line.StartsWith("Error:", StringComparison.OrdinalIgnoreCase))
+            if (_stopRequested)
                 return;
 
-            SetSessionStatus("Translation error", "#DC2626");
+            var isWarning = line.StartsWith("Warning:", StringComparison.OrdinalIgnoreCase);
+            SetSessionStatus(
+                isWarning ? "Translation warning" : "Translation error",
+                isWarning ? "#F59E0B" : "#DC2626");
             LatestTranslationText.Text = line;
         }
 
@@ -513,8 +501,9 @@ namespace Translator
 
         private static string? SelectedDevice(ComboBox comboBox)
         {
-            var value = (comboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString();
-            return string.IsNullOrWhiteSpace(value) || value == "auto" ? null : value;
+            return (comboBox.SelectedItem as ComboBoxItem)?.Tag is AudioDeviceOption device
+                ? device.PersistenceKey
+                : null;
         }
 
         private static void PopulateDevices(
@@ -531,7 +520,7 @@ namespace Translator
                     Content = string.IsNullOrWhiteSpace(device.HostApi)
                         ? device.Name
                         : $"{device.Name} · {device.HostApi}",
-                    Tag = device.Id,
+                    Tag = device,
                     ToolTip = $"Device {device.Id}: {device.Name}",
                 });
             }
@@ -634,7 +623,10 @@ namespace Translator
             {
                 foreach (var item in comboBox.Items.OfType<ComboBoxItem>())
                 {
-                    if (string.Equals(item.Tag?.ToString(), deviceId, StringComparison.Ordinal) ||
+                    var device = item.Tag as AudioDeviceOption;
+                    if ((device is not null &&
+                         (string.Equals(device.PersistenceKey, deviceId, StringComparison.Ordinal) ||
+                          string.Equals(device.Id, deviceId, StringComparison.Ordinal))) ||
                         string.Equals(item.Content?.ToString(), deviceId, StringComparison.Ordinal))
                     {
                         comboBox.SelectedItem = item;
@@ -647,9 +639,9 @@ namespace Translator
 
         private static string? SelectedDeviceKey(ComboBox comboBox)
         {
-            if (comboBox.SelectedItem is not ComboBoxItem item || item.Tag?.ToString() == "auto")
-                return null;
-            return item.Content?.ToString();
+            return (comboBox.SelectedItem as ComboBoxItem)?.Tag is AudioDeviceOption device
+                ? device.Id
+                : null;
         }
 
         private static string? SelectedVoice(ComboBox comboBox)

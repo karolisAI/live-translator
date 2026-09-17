@@ -23,7 +23,19 @@ internal sealed record BackendStartOptions(
     bool Confidential,
     bool Diagnostics);
 
-internal sealed record AudioDeviceOption(string Id, string Name, string HostApi);
+internal sealed record AudioDeviceOption(
+    string Id,
+    string Name,
+    string HostApi,
+    bool IsInput,
+    bool IsOutput)
+{
+    public string PersistenceKey => $"{Name}\u001f{HostApi}";
+}
+
+internal sealed record AudioDeviceInventory(
+    IReadOnlyList<AudioDeviceOption> Inputs,
+    IReadOnlyList<AudioDeviceOption> Outputs);
 
 internal sealed class LiveTranslatorBackend : IDisposable
 {
@@ -107,10 +119,10 @@ internal sealed class LiveTranslatorBackend : IDisposable
         process.BeginErrorReadLine();
     }
 
-    public static async Task<IReadOnlyList<AudioDeviceOption>> ListDevicesAsync(string kind)
+    public static async Task<AudioDeviceInventory> ListDevicesAsync()
     {
         var startInfo = CreateStartInfo();
-        startInfo.ArgumentList.Add(kind == "input" ? "list-input-devices" : "list-output-devices");
+        startInfo.ArgumentList.Add("list-audio-devices");
         startInfo.ArgumentList.Add("--format");
         startInfo.ArgumentList.Add("jsonl");
 
@@ -132,14 +144,27 @@ internal sealed class LiveTranslatorBackend : IDisposable
                      '\n',
                      StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            using var document = JsonDocument.Parse(line);
-            var root = document.RootElement;
-            devices.Add(new AudioDeviceOption(
-                root.GetProperty("index").GetInt32().ToString(CultureInfo.InvariantCulture),
-                root.GetProperty("name").GetString() ?? "Unknown device",
-                root.GetProperty("host_api").GetString() ?? string.Empty));
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                var root = document.RootElement;
+                devices.Add(new AudioDeviceOption(
+                    root.GetProperty("index").GetInt32().ToString(CultureInfo.InvariantCulture),
+                    root.GetProperty("name").GetString() ?? "Unknown device",
+                    root.GetProperty("host_api").GetString() ?? string.Empty,
+                    root.GetProperty("input").GetBoolean(),
+                    root.GetProperty("output").GetBoolean()));
+            }
+            catch (Exception exception) when (
+                exception is JsonException or KeyNotFoundException or InvalidOperationException)
+            {
+                // Keep valid device records even if an older development backend
+                // writes a human-readable startup line to stdout.
+            }
         }
-        return devices;
+        return new AudioDeviceInventory(
+            devices.Where(device => device.IsInput).ToArray(),
+            devices.Where(device => device.IsOutput).ToArray());
     }
 
     public async Task StopAsync()
@@ -231,7 +256,12 @@ internal sealed class LiveTranslatorBackend : IDisposable
         CreateNoWindow = true,
         StandardOutputEncoding = System.Text.Encoding.UTF8,
         StandardErrorEncoding = System.Text.Encoding.UTF8,
-        Environment = { ["PYTHONUNBUFFERED"] = "1" },
+        Environment =
+        {
+            ["PYTHONUNBUFFERED"] = "1",
+            ["PYTHONUTF8"] = "1",
+            ["PYTHONIOENCODING"] = "utf-8",
+        },
     };
 
     private static void AddOptionalArgument(

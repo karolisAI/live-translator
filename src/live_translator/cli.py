@@ -178,6 +178,12 @@ def build_parser() -> argparse.ArgumentParser:
     list_outputs.add_argument("--format", choices=("text", "jsonl"), default="text")
     list_outputs.set_defaults(func=lambda args: _list_devices(args, "output"))
 
+    list_audio = subparsers.add_parser(
+        "list-audio-devices", help="list capture and playback devices in one query"
+    )
+    list_audio.add_argument("--format", choices=("text", "jsonl"), default="text")
+    list_audio.set_defaults(func=_list_all_devices)
+
     probe_inputs = subparsers.add_parser("probe-input-devices", help="try opening each capture device")
     probe_inputs.set_defaults(func=lambda _args: probe_devices("input"))
 
@@ -327,6 +333,30 @@ def _list_devices(args: argparse.Namespace, kind: str) -> None:
                     "index": device.index,
                     "name": device.name,
                     "host_api": device.host_api,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+
+
+def _list_all_devices(args: argparse.Namespace) -> None:
+    if args.format == "text":
+        print("Input devices:")
+        print_devices("input")
+        print()
+        print("Output devices:")
+        print_devices("output")
+        return
+    for device in list_devices():
+        print(
+            json.dumps(
+                {
+                    "index": device.index,
+                    "name": device.name,
+                    "host_api": device.host_api,
+                    "input": device.max_input_channels > 0,
+                    "output": device.max_output_channels > 0,
                 },
                 ensure_ascii=False,
             ),
@@ -946,11 +976,15 @@ def cmd_converse(args: argparse.Namespace) -> int:
             inbound_config.audio.input_device, "input", role="physical_input"
         )
         if outbound_input == inbound_input:
-            print(
+            message = (
                 "Warning: both directions resolve to the same input device, so each "
                 "will capture the same audio. Point the two profiles at different "
                 "microphones (their input_device)."
             )
+            if event_sink is None:
+                print(message)
+            else:
+                event_sink({"type": "warning", "message": message})
     except Exception:
         pass
     # Give the session's thread-join enough room for each direction's own
@@ -961,8 +995,19 @@ def cmd_converse(args: argparse.Namespace) -> int:
         outbound_config.tts.piper_timeout_seconds,
         inbound_config.tts.piper_timeout_seconds,
     ) + 10.0
-    BidirectionalSession(directions, join_timeout=join_timeout).run()
-    return 0
+    def session_warning(message: str) -> None:
+        if event_sink is None:
+            print(message)
+        else:
+            event_sink({"type": "error", "message": message})
+
+    session = BidirectionalSession(
+        directions,
+        join_timeout=join_timeout,
+        on_warning=session_warning,
+    )
+    session.run()
+    return 1 if session.has_failures is True else 0
 
 
 def _resolve_direction_config(config_path: str | None, profile: str | None, role: str):

@@ -59,9 +59,12 @@ class PipelineTests(unittest.TestCase):
             inference_seconds=0.1,
             low_confidence=False,
         )
+        output = io.StringIO()
         with patch.object(pipeline, "_transcribe_audio_if_safe", return_value=transcript):
-            with redirect_stdout(io.StringIO()):
+            with redirect_stdout(output):
                 pipeline._process_live_segment(FakeSegment(), FakeTranslator(), speaker, None)
+
+        self.assertEqual(output.getvalue(), "")
 
         self.assertEqual(
             events,
