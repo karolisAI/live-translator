@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import builtins
 from pathlib import Path
 from tempfile import mkdtemp
 from threading import Event, Thread
 from time import perf_counter
+from typing import Callable
 
 from live_translator.asr import AsrEngine, TranscriptResult, create_asr
 from live_translator.audio.analysis import analyze_audio, has_enough_audio_energy
@@ -32,8 +34,14 @@ from live_translator.tts import RenderedSpeech, TtsSpeaker
 
 
 class LocalTranslatorPipeline:
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        event_sink: Callable[[dict[str, object]], None] | None = None,
+    ) -> None:
         self._config = config
+        self._event_sink = event_sink
         self._asr: AsrEngine | None = None
         self._translator: TranslationEngine | None = None
         self._speaker: TtsSpeaker | None = None
@@ -58,39 +66,39 @@ class LocalTranslatorPipeline:
         started = perf_counter()
         source = self._config.translation.source_language.upper()
         target = self._config.translation.target_language.upper()
-        print("Preparing offline models...")
-        print(f"  Speech recognition: {self._config.asr.model}")
+        self._print_human("Preparing offline models...")
+        self._print_human(f"  Speech recognition: {self._config.asr.model}")
         self._get_asr()
-        print(f"  Translation: {source} -> {target}")
+        self._print_human(f"  Translation: {source} -> {target}")
         self._get_translator().prepare()
         if include_tts:
-            print(f"  Speech output: {self._config.tts.engine}")
+            self._print_human(f"  Speech output: {self._config.tts.engine}")
             speaker = self._get_speaker()
             speaker.validate()
             speaker.warm_up()
-        print(f"Ready in {perf_counter() - started:.1f}s.")
+        self._print_human(f"Ready in {perf_counter() - started:.1f}s.")
 
     def record_test(self, output_path: str | Path, seconds: float | None = None, play: bool = False) -> None:
         audio = record_mono(self._config.audio, seconds)
         write_wav(output_path, audio, self._config.audio.sample_rate)
-        print(f"Wrote {output_path}")
+        self._print_human(f"Wrote {output_path}")
         if play:
             play_mono(audio, self._config.audio)
 
     def transcribe_once(self, seconds: float | None = None) -> str:
         started = perf_counter()
-        print(f"Preparing speech recognition: {self._config.asr.model}")
+        self._print_human(f"Preparing speech recognition: {self._config.asr.model}")
         self._get_asr()
-        print(f"Ready in {perf_counter() - started:.1f}s.")
+        self._print_human(f"Ready in {perf_counter() - started:.1f}s.")
         audio = record_mono(self._config.audio, seconds)
         result = self._transcribe_audio_if_safe(audio)
         if result is None:
-            print("Transcript: ")
+            self._print_human("Transcript: ")
             return ""
-        print(f"Detected language: {result.language or 'unknown'}")
-        print(f"ASR time: {result.inference_seconds:.2f}s for {result.duration_seconds:.2f}s audio")
+        self._print_human(f"Detected language: {result.language or 'unknown'}")
+        self._print_human(f"ASR time: {result.inference_seconds:.2f}s for {result.duration_seconds:.2f}s audio")
         self._print_asr_rejections(result)
-        print(f"Transcript: {result.text}")
+        self._print_human(f"Transcript: {result.text}")
         return result.text
 
     def translate_once(self, seconds: float | None = None, speak: bool = True) -> str:
@@ -119,9 +127,9 @@ class LocalTranslatorPipeline:
         asr_seconds = perf_counter() - asr_start
         if result is None:
             total_seconds = perf_counter() - start
-            print("Source: ")
-            print("Target: ")
-            print(
+            self._print_human("Source: ")
+            self._print_human("Target: ")
+            self._print_human(
                 "Timings: "
                 f"audio={len(audio) / self._config.audio.sample_rate:.2f}s "
                 f"asr={asr_seconds:.2f}s mt=0.00s tts=0.00s total={total_seconds:.2f}s"
@@ -140,9 +148,9 @@ class LocalTranslatorPipeline:
 
         total_seconds = perf_counter() - start
         self._print_asr_rejections(result)
-        print(f"Source: {result.text}")
-        print(f"Target: {translated}")
-        print(
+        self._print_human(f"Source: {result.text}")
+        self._print_human(f"Target: {translated}")
+        self._print_human(
             "Timings: "
             f"audio={len(audio) / self._config.audio.sample_rate:.2f}s "
             f"asr={asr_seconds:.2f}s mt={mt_seconds:.2f}s "
@@ -243,11 +251,12 @@ class LocalTranslatorPipeline:
 
         source = self._config.translation.source_language.upper()
         target = self._config.translation.target_language.upper()
-        print(f"{self._line_prefix()}Direction: {source} -> {target}")
-        print(f"{self._line_prefix()}Live translation active. Listening continuously between phrases.")
+        self._print_human(f"{self._line_prefix()}Direction: {source} -> {target}")
+        self._print_human(f"{self._line_prefix()}Live translation active. Listening continuously between phrases.")
+        self._emit_event("status", state="active", source=source.lower(), target=target.lower())
         self._announce_text_display()
         if self._verbose and chunker == "vad":
-            print(
+            self._print_human(
                 f"{self._line_prefix()}Chunker=vad silence={self._config.chunking.silence_ms}ms "
                 f"min={self._config.chunking.min_segment_seconds:.1f}s "
                 f"max={self._config.chunking.max_seconds:.1f}s "
@@ -255,7 +264,7 @@ class LocalTranslatorPipeline:
                 f"output={self._config.audio.output_device or 'default'}"
             )
         elif self._verbose and chunker == "rolling":
-            print(
+            self._print_human(
                 f"{self._line_prefix()}Chunker=rolling emit={self._config.chunking.rolling_window_seconds:.1f}s "
                 f"silence={self._config.chunking.silence_ms}ms "
                 f"max={self._config.chunking.max_seconds:.1f}s "
@@ -263,7 +272,7 @@ class LocalTranslatorPipeline:
                 f"output={self._config.audio.output_device or 'default'}"
             )
         elif self._verbose:
-            print(
+            self._print_human(
                 f"{self._line_prefix()}Chunker=fixed chunk={self._config.audio.chunk_seconds:.1f}s "
                 f"input={self._config.audio.input_device or 'default'} "
                 f"output={self._config.audio.output_device or 'default'}"
@@ -304,7 +313,7 @@ class LocalTranslatorPipeline:
             workers.stop(join_timeout=self._config.tts.piper_timeout_seconds + 5.0)
         workers.raise_if_failed()
         if interrupted:
-            print("Meeting translation ended.")
+            self._print_human("Meeting translation ended.")
 
     def _get_asr(self) -> AsrEngine:
         if self._asr is None:
@@ -343,10 +352,20 @@ class LocalTranslatorPipeline:
         if transcript is None:
             self._write_debug_note(debug_wav, "skipped", "")
             if self._verbose:
-                print(f"{self._line_prefix()}Segment {segment.number}: skipped in {perf_counter() - started:.2f}s")
+                self._print_human(f"{self._line_prefix()}Segment {segment.number}: skipped in {perf_counter() - started:.2f}s")
             return None
 
         translated = translator.translate(transcript.text)
+        if self._event_sink is not None:
+            self._emit_event(
+                "translation",
+                source_language=self._config.translation.source_language,
+                target_language=self._config.translation.target_language,
+                source_text=transcript.text,
+                translated_text=translated,
+                low_confidence=transcript.low_confidence,
+                segment=segment.number,
+            )
         self._write_debug_note(debug_wav, transcript.text, translated)
         self._print_asr_rejections(transcript)
         if self._show_text:
@@ -361,7 +380,7 @@ class LocalTranslatorPipeline:
         rendered = self._render_speech(speaker, translated, segment.number) if translated else None
         if self._verbose:
             queue_seconds = max(0.0, started - segment.captured_at)
-            print(
+            self._print_human(
                 f"{self._line_prefix()}Segment {segment.number}: queue={queue_seconds:.2f}s "
                 f"recognition+translation+synthesis={perf_counter() - started:.2f}s"
             )
@@ -392,7 +411,7 @@ class LocalTranslatorPipeline:
             return speaker.render(text)
         except UntrustedRuntimePath as exc:
             self._tts_disabled_reason = str(exc)
-            print(
+            self._print_human(
                 f"SECURITY WARNING: phrase {segment_number} tried to run a speech "
                 f"executable outside every trusted location ({exc}). Spoken "
                 f"playback is disabled for the rest of this meeting; "
@@ -400,7 +419,7 @@ class LocalTranslatorPipeline:
             )
             return None
         except Exception as exc:
-            print(
+            self._print_human(
                 f"Warning: speech synthesis failed for phrase {segment_number}: "
                 f"{exc}. Continuing without spoken output for this phrase."
             )
@@ -419,7 +438,7 @@ class LocalTranslatorPipeline:
             speaker.play,
             segment_queue_size=self._config.realtime.recognition_queue_size,
             playback_queue_size=self._config.realtime.playback_queue_size,
-            on_warning=lambda message: print(f"{self._line_prefix()}{message}"),
+            on_warning=lambda message: self._print_human(f"{self._line_prefix()}{message}"),
             stop_event=stop_event,
         )
 
@@ -441,7 +460,7 @@ class LocalTranslatorPipeline:
             if result.rejected_segments and self._verbose:
                 self._print_asr_rejections(result)
             if self._verbose:
-                print("Skipping segment: ASR produced no accepted speech.")
+                self._print_human("Skipping segment: ASR produced no accepted speech.")
             return None
         return result
 
@@ -454,7 +473,7 @@ class LocalTranslatorPipeline:
             active_peak_threshold=self._config.chunking.peak_threshold,
         )
         if self._verbose:
-            print(
+            self._print_human(
                 "Audio gate: "
                 f"rms={stats.rms:.4f} peak={stats.peak:.4f} active={stats.active_ratio:.2f} "
                 f"duration={stats.duration_seconds:.2f}s"
@@ -468,7 +487,7 @@ class LocalTranslatorPipeline:
             return True
 
         if self._verbose:
-            print(
+            self._print_human(
                 "Skipping segment: below speech energy gate "
                 f"(rms>={self._config.chunking.rms_threshold:.4f}, "
                 f"peak>={self._config.chunking.peak_threshold:.4f}, "
@@ -489,9 +508,23 @@ class LocalTranslatorPipeline:
         # asr.flag_log_prob_threshold.
         marker = " [low confidence]" if low_confidence else ""
         prefix = self._line_prefix()
-        print()
-        print(f"{prefix}{source}{marker}: {source_text}")
-        print(f"{prefix}{target}{marker}: {target_text}")
+        self._print_human()
+        self._print_human(f"{prefix}{source}{marker}: {source_text}")
+        self._print_human(f"{prefix}{target}{marker}: {target_text}")
+
+    def _emit_event(self, event_type: str, **payload: object) -> None:
+        if self._event_sink is not None:
+            self._event_sink({"type": event_type, **payload})
+
+    def _print_human(self, *args: object, **kwargs: object) -> None:
+        """Keep stdout machine-readable when a JSON event sink is active."""
+        if self._event_sink is None:
+            builtins.print(*args, **kwargs)
+            return
+
+        message = " ".join(str(arg) for arg in args)
+        if message.startswith(("Warning:", "SECURITY WARNING:", "Diagnostic capture could not")):
+            self._emit_event("warning", message=message)
 
     def _announce_text_display(self) -> None:
         """Say once that the conversation will be on screen.
@@ -501,7 +534,7 @@ class LocalTranslatorPipeline:
         live. Not printed under --verbose, whose output other tooling parses.
         """
         if self._show_text and not self._verbose:
-            print(
+            self._print_human(
                 f"{self._line_prefix()}Showing transcripts and translations on screen. They remain in "
                 "the terminal scrollback and are visible on a screen share."
             )
@@ -520,7 +553,7 @@ class LocalTranslatorPipeline:
         """
         marker = "    low confidence" if low_confidence else ""
         audio_seconds = len(segment.audio) / self._config.audio.sample_rate
-        print(
+        self._print_human(
             f"{self._line_prefix()}Phrase {segment.number:>3}    {audio_seconds:.1f}s    "
             f"ready in {elapsed_seconds:.1f}s{marker}"
         )
@@ -531,7 +564,7 @@ class LocalTranslatorPipeline:
         reasons = ", ".join(result.rejection_reasons[:3])
         if len(result.rejection_reasons) > 3:
             reasons += ", ..."
-        print(f"{self._line_prefix()}ASR rejected {result.rejected_segments} low-confidence/no-speech segment(s): {reasons}")
+        self._print_human(f"{self._line_prefix()}ASR rejected {result.rejected_segments} low-confidence/no-speech segment(s): {reasons}")
 
     def _start_diagnostics(
         self, *, diagnostics: bool, debug_audio_dir: str | Path | None
@@ -559,14 +592,14 @@ class LocalTranslatorPipeline:
             # session directories while retaining the retention/purge layout.
             capture_dir = Path(mkdtemp(prefix=session_directory_name() + "-", dir=root))
         except (OSError, ValueError) as exc:
-            print(
+            self._print_human(
                 f"Diagnostic capture could not start: {exc}. "
                 "Continuing without it; the meeting is not affected."
             )
             return None
 
         self._capture_limits = CaptureLimits(settings, root, capture_dir)
-        print(capture_warning(capture_dir, settings))
+        self._print_human(capture_warning(capture_dir, settings))
         return capture_dir
 
     def _expire_old_diagnostics(self) -> None:
@@ -599,7 +632,7 @@ class LocalTranslatorPipeline:
             return
         result = self._capture_limits.record(path)
         if result:
-            print(
+            self._print_human(
                 f"Diagnostics reached its {self._config.diagnostics.max_total_mb} MB limit: "
                 f"removed the {result.files_removed} oldest file(s), "
                 f"{result.bytes_freed / 1024 / 1024:.1f} MB freed."
@@ -656,13 +689,13 @@ class LocalTranslatorPipeline:
         if self._capture_failure_warned:
             return
         self._capture_failure_warned = True
-        print(
+        self._print_human(
             f"Warning: diagnostic capture could not write {path}: {error}. "
             "The meeting continues; further capture failures are not reported."
         )
 
     def _print_audio_route(self) -> None:
-        print(f"{self._line_prefix()}Audio routing:")
+        self._print_human(f"{self._line_prefix()}Audio routing:")
         input_index = resolve_device_index(
             self._config.audio.input_device,
             "input",
@@ -674,12 +707,12 @@ class LocalTranslatorPipeline:
         input_label = (
             "Remote party audio:" if is_virtual_device(input_index, "input") else "Physical microphone:"
         )
-        print(
+        self._print_human(
             f"{self._line_prefix()}  {input_label:20} "
             + describe_device_index(input_index, "input")
         )
         if self._config.audio.output_device:
-            print(
+            self._print_human(
                 f"{self._line_prefix()}  Translated output:  "
                 + describe_device_selection(
                     self._config.audio.output_device,
@@ -688,7 +721,7 @@ class LocalTranslatorPipeline:
                 )
             )
         if self._config.audio.peer_input_device:
-            print(
+            self._print_human(
                 f"{self._line_prefix()}  Meeting microphone: "
                 + describe_device_selection(
                     self._config.audio.peer_input_device,

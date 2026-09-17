@@ -12,7 +12,7 @@ import yaml
 
 from live_translator.asr.model_store import recorded_revision
 from live_translator.audio.devices import AudioDevice
-from live_translator.cli import build_parser, cmd_prepare_models, main
+from live_translator.cli import _print_json_event, build_parser, cmd_prepare_models, main
 from live_translator.defaults import ASR_MODEL_REVISION
 from live_translator.session import BidirectionalSession
 from live_translator.config import AppConfig
@@ -55,6 +55,20 @@ class ConverseTests(unittest.TestCase):
     Only the device inventory, audio start-up, pipelines and the session are
     faked, so nothing loads models or opens a stream.
     """
+
+    def test_lists_input_and_output_devices_in_one_jsonl_query(self) -> None:
+        output = io.StringIO()
+        with (
+            patch("live_translator.cli.list_devices", return_value=CONVERSE_DEVICES),
+            redirect_stdout(output),
+        ):
+            code = main(["list-audio-devices", "--format", "jsonl"])
+
+        self.assertEqual(code, 0)
+        devices = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertTrue(any(device["input"] for device in devices))
+        self.assertTrue(any(device["output"] for device in devices))
+        self.assertTrue(all("host_api" in device for device in devices))
 
     def _profile(self, temp_dir: str, direction: str) -> Path:
         return write_meeting_profile(
@@ -102,6 +116,122 @@ class ConverseTests(unittest.TestCase):
         self.assertEqual(inbound.audio.output_device, "Headphones (Jabra Evolve2 65)")
         self.assertIsNone(inbound.audio.peer_input_device)
         session.return_value.run.assert_called_once()
+
+    def test_jsonl_events_identify_each_conversation_side(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            profile = self._profile(temp_dir, "en-de")
+            code, pipeline, _, stderr = self._run(
+                [
+                    "converse",
+                    "--outbound-config",
+                    str(profile),
+                    "--event-format",
+                    "jsonl",
+                    "--confidential",
+                ]
+            )
+
+        self.assertEqual(code, 0, stderr)
+        sinks = [call.kwargs["event_sink"] for call in pipeline.call_args_list]
+        output = io.StringIO()
+        with redirect_stdout(output):
+            sinks[0]({"type": "translation", "source_text": "Hello"})
+            sinks[1]({"type": "translation", "source_text": "Hallo"})
+
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([event["role"] for event in events], ["outbound", "inbound"])
+        self.assertEqual([event["confidential"] for event in events], [True, True])
+
+    def test_converse_applies_independent_voices_and_speeds(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            profile = self._profile(temp_dir, "en-de")
+            code, pipeline, _, stderr = self._run(
+                [
+                    "converse",
+                    "--outbound-config",
+                    str(profile),
+                    "--outbound-voice",
+                    "female",
+                    "--inbound-voice",
+                    "female",
+                    "--outbound-voice-speed",
+                    "1.2",
+                    "--inbound-voice-speed",
+                    "0.8",
+                ]
+            )
+
+        self.assertEqual(code, 0, stderr)
+        outbound, inbound = (call.args[0] for call in pipeline.call_args_list)
+        self.assertEqual(outbound.tts.model_path, "models/tts/de_DE-kerstin-low.onnx")
+        self.assertEqual(inbound.tts.model_path, "models/tts/en_US-hfc_female-medium.onnx")
+        self.assertEqual(outbound.tts.length_scale, 1.2)
+        self.assertEqual(inbound.tts.length_scale, 0.8)
+
+    def test_converse_applies_gui_audio_routes_and_speech_toggles(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            profile = self._profile(temp_dir, "en-de")
+            code, pipeline, _, stderr = self._run(
+                [
+                    "converse",
+                    "--outbound-config",
+                    str(profile),
+                    "--outbound-input-device",
+                    "30",
+                    "--outbound-output-device",
+                    "26",
+                    "--meeting-microphone-device",
+                    "33",
+                    "--inbound-input-device",
+                    "31",
+                    "--inbound-output-device",
+                    "40",
+                    "--no-outbound-speech",
+                    "--no-inbound-speech",
+                ]
+            )
+
+        self.assertEqual(code, 0, stderr)
+        outbound, inbound = (call.args[0] for call in pipeline.call_args_list)
+        self.assertEqual(outbound.audio.input_device, "30")
+        self.assertEqual(outbound.audio.output_device, "26")
+        self.assertEqual(outbound.audio.peer_input_device, "33")
+        self.assertEqual(inbound.audio.input_device, "31")
+        self.assertEqual(inbound.audio.output_device, "40")
+        self.assertEqual(outbound.tts.engine, "none")
+        self.assertEqual(inbound.tts.engine, "none")
+
+    def test_confidential_mode_disables_profile_diagnostics(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            profile = self._profile(temp_dir, "en-de")
+            payload = yaml.safe_load(profile.read_text())
+            payload["diagnostics"] = {"enabled": True, "dir": "captured"}
+            profile.write_text(yaml.safe_dump(payload))
+            code, pipeline, _, stderr = self._run(
+                ["converse", "--outbound-config", str(profile), "--confidential"]
+            )
+
+        self.assertEqual(code, 0, stderr)
+        for call in pipeline.call_args_list:
+            self.assertFalse(call.args[0].diagnostics.enabled)
+            self.assertIsNone(call.args[0].diagnostics.dir)
+
+    def test_converse_diagnostics_reaches_both_directions(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            profile = self._profile(temp_dir, "en-de")
+            code, pipeline, _, stderr = self._run(
+                ["converse", "--outbound-config", str(profile), "--diagnostics"],
+                real_session=True,
+            )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(pipeline.return_value.run_prepared.call_count, 2)
+        self.assertTrue(
+            all(
+                call.kwargs["diagnostics"]
+                for call in pipeline.return_value.run_prepared.call_args_list
+            )
+        )
 
     def test_refuses_a_looping_inbound_profile_before_loading_anything(self) -> None:
         # A de-en profile written by setup plays into the outbound cable, which
@@ -351,6 +481,30 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(args.chunker, "rolling")
+
+    def test_meeting_accepts_jsonl_events_for_gui_clients(self) -> None:
+        args = build_parser().parse_args(
+            ["meeting", "--profile", "en-de", "--event-format", "jsonl"]
+        )
+
+        self.assertEqual(args.event_format, "jsonl")
+
+    def test_converse_accepts_jsonl_events_for_gui_clients(self) -> None:
+        args = build_parser().parse_args(
+            ["converse", "--outbound-profile", "en-de", "--event-format", "jsonl"]
+        )
+
+        self.assertEqual(args.event_format, "jsonl")
+
+    def test_json_event_is_one_utf8_safe_line(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            _print_json_event({"type": "translation", "translated_text": "Können"})
+
+        self.assertEqual(
+            output.getvalue(),
+            '{"type": "translation", "translated_text": "Können"}\n',
+        )
 
 
 class DiagnosticsFlagTests(unittest.TestCase):

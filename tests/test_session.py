@@ -100,6 +100,7 @@ class BidirectionalSessionTests(unittest.TestCase):
             # The broken direction has failed by now, but the session is still
             # alive because the healthy one keeps running.
             wait_until(lambda: any("broken" in w and "ended early" in w for w in warnings))
+            self.assertTrue(session.has_failures)
             time.sleep(0.1)
             self.assertTrue(runner.is_alive())
             session.stop()

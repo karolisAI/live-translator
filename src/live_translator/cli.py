@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import importlib.util
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
@@ -13,6 +15,7 @@ from live_translator.audio.devices import (
     DeviceRole,
     check_inbound_route,
     describe_device_selection,
+    list_devices,
     print_devices,
     probe_devices,
     resolve_device_index,
@@ -91,6 +94,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="print each phrase and its translation on screen; writes nothing to disk",
     )
     meeting.add_argument(
+        "--event-format",
+        choices=("text", "jsonl"),
+        default="text",
+        help="emit stable machine-readable session events for a GUI client",
+    )
+    meeting.add_argument(
         "--diagnostics",
         action="store_true",
         help="capture this meeting's audio, transcripts and translations for troubleshooting",
@@ -162,10 +171,18 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.set_defaults(func=cmd_prepare_models)
 
     list_inputs = subparsers.add_parser("list-input-devices", help="list capture devices")
-    list_inputs.set_defaults(func=lambda _args: print_devices("input"))
+    list_inputs.add_argument("--format", choices=("text", "jsonl"), default="text")
+    list_inputs.set_defaults(func=lambda args: _list_devices(args, "input"))
 
     list_outputs = subparsers.add_parser("list-output-devices", help="list playback devices")
-    list_outputs.set_defaults(func=lambda _args: print_devices("output"))
+    list_outputs.add_argument("--format", choices=("text", "jsonl"), default="text")
+    list_outputs.set_defaults(func=lambda args: _list_devices(args, "output"))
+
+    list_audio = subparsers.add_parser(
+        "list-audio-devices", help="list capture and playback devices in one query"
+    )
+    list_audio.add_argument("--format", choices=("text", "jsonl"), default="text")
+    list_audio.set_defaults(func=_list_all_devices)
 
     probe_inputs = subparsers.add_parser("probe-input-devices", help="try opening each capture device")
     probe_inputs.set_defaults(func=lambda _args: probe_devices("input"))
@@ -261,10 +278,90 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print each phrase and its translation on screen; writes nothing to disk",
     )
+    converse.add_argument(
+        "--event-format",
+        choices=("text", "jsonl"),
+        default="text",
+        help="machine-readable output format for desktop clients",
+    )
+    converse.add_argument(
+        "--outbound-voice",
+        choices=("male", "female"),
+        default=None,
+        help="bundled Piper voice for speech sent to the other participant",
+    )
+    converse.add_argument(
+        "--inbound-voice",
+        choices=("male", "female"),
+        default=None,
+        help="bundled Piper voice for translated speech heard locally",
+    )
+    converse.add_argument("--outbound-voice-speed", type=float, default=None)
+    converse.add_argument("--inbound-voice-speed", type=float, default=None)
+    converse.add_argument("--outbound-input-device", default=None)
+    converse.add_argument("--outbound-output-device", default=None)
+    converse.add_argument("--meeting-microphone-device", default=None)
+    converse.add_argument("--inbound-input-device", default=None)
+    converse.add_argument("--inbound-output-device", default=None)
+    converse.add_argument("--no-outbound-speech", action="store_true")
+    converse.add_argument("--no-inbound-speech", action="store_true")
+    privacy = converse.add_mutually_exclusive_group()
+    privacy.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="capture both directions for troubleshooting",
+    )
+    privacy.add_argument(
+        "--confidential",
+        action="store_true",
+        help="guarantee that diagnostic audio and text capture is disabled",
+    )
     converse.add_argument("--verbose", action="store_true", help="show audio gates and per-segment timings")
     converse.set_defaults(func=cmd_converse)
 
     return parser
+
+
+def _list_devices(args: argparse.Namespace, kind: str) -> None:
+    if args.format == "text":
+        print_devices(kind)
+        return
+    for device in list_devices(kind):
+        print(
+            json.dumps(
+                {
+                    "index": device.index,
+                    "name": device.name,
+                    "host_api": device.host_api,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+
+
+def _list_all_devices(args: argparse.Namespace) -> None:
+    if args.format == "text":
+        print("Input devices:")
+        print_devices("input")
+        print()
+        print("Output devices:")
+        print_devices("output")
+        return
+    for device in list_devices():
+        print(
+            json.dumps(
+                {
+                    "index": device.index,
+                    "name": device.name,
+                    "host_api": device.host_api,
+                    "input": device.max_input_channels > 0,
+                    "output": device.max_output_channels > 0,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
 
 
 def add_inbound_language_options(parser: argparse.ArgumentParser) -> None:
@@ -663,13 +760,18 @@ def cmd_meeting(args: argparse.Namespace) -> int:
     if args.config is None:
         args.config = str(default_profile_path(args.profile))
     config = build_config(args)
-    LocalTranslatorPipeline(config).loopback(
+    event_sink = _print_json_event if args.event_format == "jsonl" else None
+    LocalTranslatorPipeline(config, event_sink=event_sink).loopback(
         debug_audio_dir=args.debug_audio_dir,
         verbose=args.verbose,
         diagnostics=args.diagnostics,
         show_text=args.show_text,
     )
     return 0
+
+
+def _print_json_event(event: dict[str, object]) -> None:
+    print(json.dumps(event, ensure_ascii=False), flush=True)
 
 
 def cmd_route_test(args: argparse.Namespace) -> int:
@@ -821,6 +923,26 @@ def cmd_converse(args: argparse.Namespace) -> int:
         inbound_config = wire_inbound_devices(
             derive_inbound_config(outbound_config, args.their_language, args.inbound_target_language or "en")
         )
+    outbound_config = _apply_converse_overrides(
+        outbound_config,
+        voice=args.outbound_voice,
+        voice_speed=args.outbound_voice_speed,
+        input_device=args.outbound_input_device,
+        output_device=args.outbound_output_device,
+        peer_input_device=args.meeting_microphone_device,
+        speak=not args.no_outbound_speech,
+        confidential=args.confidential,
+    )
+    inbound_config = _apply_converse_overrides(
+        inbound_config,
+        voice=args.inbound_voice,
+        voice_speed=args.inbound_voice_speed,
+        input_device=args.inbound_input_device,
+        output_device=args.inbound_output_device,
+        peer_input_device=None,
+        speak=not args.no_inbound_speech,
+        confidential=args.confidential,
+    )
     # Before anything is loaded or opened: an inbound route that plays into the
     # meeting's cable, or captures a microphone or the outbound cable, would loop
     # audio back into the call. This applies to explicit inbound profiles too.
@@ -832,9 +954,10 @@ def cmd_converse(args: argparse.Namespace) -> int:
     if args.inbound_config or args.inbound_profile:
         validate_inbound_config(inbound_config)
 
+    event_sink = _print_json_event if args.event_format == "jsonl" else None
     directions = [
-        _build_direction(outbound_config, args, role="Outbound"),
-        _build_direction(inbound_config, args, role="Inbound"),
+        _build_direction(outbound_config, args, role="Outbound", event_sink=event_sink),
+        _build_direction(inbound_config, args, role="Inbound", event_sink=event_sink),
     ]
     # Initialise PortAudio on the main thread first: each direction opens its
     # streams from its own worker thread, and PortAudio's first-time init is not
@@ -853,11 +976,15 @@ def cmd_converse(args: argparse.Namespace) -> int:
             inbound_config.audio.input_device, "input", role="physical_input"
         )
         if outbound_input == inbound_input:
-            print(
+            message = (
                 "Warning: both directions resolve to the same input device, so each "
                 "will capture the same audio. Point the two profiles at different "
                 "microphones (their input_device)."
             )
+            if event_sink is None:
+                print(message)
+            else:
+                event_sink({"type": "warning", "message": message})
     except Exception:
         pass
     # Give the session's thread-join enough room for each direction's own
@@ -868,8 +995,19 @@ def cmd_converse(args: argparse.Namespace) -> int:
         outbound_config.tts.piper_timeout_seconds,
         inbound_config.tts.piper_timeout_seconds,
     ) + 10.0
-    BidirectionalSession(directions, join_timeout=join_timeout).run()
-    return 0
+    def session_warning(message: str) -> None:
+        if event_sink is None:
+            print(message)
+        else:
+            event_sink({"type": "error", "message": message})
+
+    session = BidirectionalSession(
+        directions,
+        join_timeout=join_timeout,
+        on_warning=session_warning,
+    )
+    session.run()
+    return 1 if session.has_failures is True else 0
 
 
 def _resolve_direction_config(config_path: str | None, profile: str | None, role: str):
@@ -884,14 +1022,33 @@ def _resolve_direction_config(config_path: str | None, profile: str | None, role
     return load_config(path)
 
 
-def _build_direction(config, args: argparse.Namespace, *, role: str = "") -> Direction:
+def _build_direction(
+    config,
+    args: argparse.Namespace,
+    *,
+    role: str = "",
+    event_sink=None,
+) -> Direction:
     label = (
         f"{config.translation.source_language.upper()}->"
         f"{config.translation.target_language.upper()}"
     )
     if role:
         label = f"{role} {label}"
-    pipeline = LocalTranslatorPipeline(config)
+    role_event_sink = None
+    if event_sink is not None:
+        role_name = role.lower()
+
+        def role_event_sink(event: dict[str, object]) -> None:
+            event_sink(
+                {
+                    **event,
+                    "role": role_name,
+                    "confidential": args.confidential,
+                }
+            )
+
+    pipeline = LocalTranslatorPipeline(config, event_sink=role_event_sink)
     return Direction(
         label=label,
         prepare=pipeline.prepare,
@@ -899,10 +1056,45 @@ def _build_direction(config, args: argparse.Namespace, *, role: str = "") -> Dir
             stop_event=stop,
             label=l,
             verbose=args.verbose,
+            diagnostics=args.diagnostics,
             show_text=args.show_text,
         ),
         close=pipeline.close,
     )
+
+
+def _apply_converse_overrides(
+    config: AppConfig,
+    *,
+    voice: str | None,
+    voice_speed: float | None,
+    input_device: str | None,
+    output_device: str | None,
+    peer_input_device: str | None,
+    speak: bool,
+    confidential: bool,
+) -> AppConfig:
+    model_path = None
+    if voice is not None:
+        if config.tts.engine.lower() not in {"piper", "piper-cli"}:
+            raise ValueError("Voice selection requires the Piper TTS engine.")
+        model_path = voice_model(config.translation.target_language, voice)
+
+    updated = apply_cli_overrides(
+        config,
+        input_device=input_device,
+        output_device=output_device,
+        peer_input_device=peer_input_device,
+        tts_engine=None if speak else "none",
+        tts_model_path=model_path,
+        tts_length_scale=voice_speed,
+    )
+    if confidential:
+        updated = replace(
+            updated,
+            diagnostics=replace(updated.diagnostics, enabled=False, dir=None),
+        )
+    return updated
 
 
 def build_config(args: argparse.Namespace):

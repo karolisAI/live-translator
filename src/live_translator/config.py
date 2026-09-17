@@ -205,6 +205,7 @@ def apply_cli_overrides(
     seconds: float | None = None,
     input_device: str | None = None,
     output_device: str | None = None,
+    peer_input_device: str | None = None,
     input_gain: float | None = None,
     asr_engine: str | None = None,
     model: str | None = None,
@@ -240,6 +241,8 @@ def apply_cli_overrides(
         audio = replace(audio, input_device=input_device)
     if output_device is not None:
         audio = replace(audio, output_device=output_device)
+    if peer_input_device is not None:
+        audio = replace(audio, peer_input_device=peer_input_device)
     if input_gain is not None:
         audio = replace(audio, input_gain=input_gain)
     if asr_engine is not None:

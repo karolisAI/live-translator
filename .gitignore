@@ -40,3 +40,7 @@ app.working-devices.yaml
 # not as an unreviewed local working-tree file.
 dependency-audit-requirements.txt
 *.cdx.json
+# .NET/WPF build and user-specific output.
+bin/
+obj/
+*.csproj.user
