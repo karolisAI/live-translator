@@ -4,7 +4,9 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
-        Title="Translate" Width="1100" Height="820" MinWidth="900" MinHeight="650"
+        Title="Translate" Width="1100" Height="820" MinWidth="900" MinHeight="600"
+        MaxWidth="{x:Static SystemParameters.MaximizedPrimaryScreenWidth}"
+        MaxHeight="{x:Static SystemParameters.MaximizedPrimaryScreenHeight}"
         WindowStartupLocation="CenterScreen" Background="White"
         FontFamily="Segoe UI" FontSize="14" Foreground="#20252B">
     <Window.Resources>
